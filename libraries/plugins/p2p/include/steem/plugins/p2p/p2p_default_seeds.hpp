@@ -28,7 +28,7 @@ const std::vector< std::string > default_seeds = {
    "seed.steemzzang.com:2001",           // @zzan.witnesses in Philland
    "seednode.dlike.io:2001",             // @Dlike Location Germany
    "seed.steemer.app:2001",              // @Bukio
-   "seed.Supporter.dev:2001",            // @dev.Supports
+   "seed.supporter.dev:2001",            // @dev.Supports
    "seed.goodhello.net:2001"             // @helloworld.wit
 };
 #endif
