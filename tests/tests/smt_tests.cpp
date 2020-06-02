@@ -1,6 +1,6 @@
 #include <fc/macros.hpp>
 
-#if defined IS_TEST_NET && defined STEEM_ENABLE_SMT
+#if defined IS_TEST_NET
 
 FC_TODO(Extend testing scenarios to support multiple NAIs per account)
 
@@ -10,6 +10,7 @@ FC_TODO(Extend testing scenarios to support multiple NAIs per account)
 
 #include <steem/protocol/exceptions.hpp>
 #include <steem/protocol/hardfork.hpp>
+#include <steem/protocol/smt_util.hpp>
 
 #include <steem/chain/database.hpp>
 #include <steem/chain/database_exceptions.hpp>
@@ -26,7 +27,7 @@ using fc::string;
 using boost::container::flat_set;
 using boost::container::flat_map;
 
-BOOST_FIXTURE_TEST_SUITE( smt_tests, smt_database_fixture )
+BOOST_FIXTURE_TEST_SUITE( smt_tests, clean_database_fixture )
 
 BOOST_AUTO_TEST_CASE( smt_transfer_validate )
 {
@@ -84,89 +85,6 @@ BOOST_AUTO_TEST_CASE( smt_transfer_apply )
       FC_ASSERT( db->get_balance( "bob", bob_symbol ).amount == 60, "SMT transfer error" );
 
       validate_database();
-   }
-   FC_LOG_AND_RETHROW()
-}
-
-BOOST_AUTO_TEST_CASE( comment_votable_assers_validate )
-{
-   try
-   {
-      BOOST_TEST_MESSAGE( "Test Comment Votable Assets Validate" );
-      ACTORS((alice));
-
-      generate_block();
-
-      std::array<asset_symbol_type, SMT_MAX_VOTABLE_ASSETS + 1> smts;
-      /// Create one more than limit to test negative cases
-      for(size_t i = 0; i < SMT_MAX_VOTABLE_ASSETS + 1; ++i)
-      {
-         asset_symbol_type smt = create_smt("alice", alice_private_key, 0);
-         smts[i] = std::move(smt);
-      }
-
-      {
-         comment_options_operation op;
-
-         op.author = "alice";
-         op.permlink = "test";
-
-         BOOST_TEST_MESSAGE( "--- Testing valid configuration: no votable_assets" );
-         allowed_vote_assets ava;
-         op.extensions.insert( ava );
-         op.validate();
-      }
-
-      {
-         comment_options_operation op;
-
-         op.author = "alice";
-         op.permlink = "test";
-
-         BOOST_TEST_MESSAGE( "--- Testing valid configuration of votable_assets" );
-         allowed_vote_assets ava;
-         for(size_t i = 0; i < SMT_MAX_VOTABLE_ASSETS; ++i)
-         {
-            const auto& smt = smts[i];
-            ava.add_votable_asset(smt, share_type(10 + i), (i & 2) != 0);
-         }
-
-         op.extensions.insert( ava );
-         op.validate();
-      }
-
-      {
-         comment_options_operation op;
-
-         op.author = "alice";
-         op.permlink = "test";
-
-         BOOST_TEST_MESSAGE( "--- Testing invalid configuration of votable_assets - too much assets specified" );
-         allowed_vote_assets ava;
-         for(size_t i = 0; i < smts.size(); ++i)
-         {
-            const auto& smt = smts[i];
-            ava.add_votable_asset(smt, share_type(20 + i), (i & 2) != 0);
-         }
-
-         op.extensions.insert( ava );
-         STEEM_REQUIRE_THROW( op.validate(), fc::assert_exception );
-      }
-
-      {
-         comment_options_operation op;
-
-         op.author = "alice";
-         op.permlink = "test";
-
-         BOOST_TEST_MESSAGE( "--- Testing invalid configuration of votable_assets - STEEM added to container" );
-         allowed_vote_assets ava;
-         const auto& smt = smts.front();
-         ava.add_votable_asset(smt, share_type(20), false);
-         ava.add_votable_asset(STEEM_SYMBOL, share_type(20), true);
-         op.extensions.insert( ava );
-         STEEM_REQUIRE_THROW( op.validate(), fc::assert_exception );
-      }
    }
    FC_LOG_AND_RETHROW()
 }
@@ -231,6 +149,447 @@ BOOST_AUTO_TEST_CASE( vesting_smt_creation )
    FC_LOG_AND_RETHROW()
 }
 
+BOOST_AUTO_TEST_CASE( smt_founder_vesting )
+{
+   using namespace steem::protocol;
+   BOOST_TEST_MESSAGE( "Testing: is_founder_vesting and get_unit_target_account" );
+
+   BOOST_TEST_MESSAGE( " -- Valid founder vesting" );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_ACCOUNT_VESTING( "alice" ) ) );
+
+   BOOST_TEST_MESSAGE( " -- Account name parsing" );
+   BOOST_REQUIRE( smt::unit_target::get_unit_target_account( SMT_DESTINATION_ACCOUNT_VESTING( "alice" ) ) == account_name_type( "alice" ) );
+
+   BOOST_TEST_MESSAGE( " -- No possible room for an account name" );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_ACCOUNT_VESTING( "" ) ) == false );
+
+   BOOST_TEST_MESSAGE( " -- Meant to be founder vesting" );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_ACCOUNT_VESTING( "@" ) ) );
+
+   BOOST_TEST_MESSAGE( " -- Invalid account name upon retrieval" );
+   BOOST_REQUIRE_THROW( smt::unit_target::get_unit_target_account( SMT_DESTINATION_ACCOUNT_VESTING( "@" ) ), fc::assert_exception );
+
+   BOOST_TEST_MESSAGE( " -- SMT special destinations" );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_FROM_VESTING ) == false );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_REWARDS ) == false );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_MARKET_MAKER ) == false );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_FROM ) == false );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_FROM_VESTING ) == false );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_VESTING ) == false );
+
+   BOOST_TEST_MESSAGE( " -- Partial founder vesting special name" );
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( SMT_DESTINATION_ACCOUNT_PREFIX "bob" ) == false );
+   BOOST_REQUIRE_THROW( smt::unit_target::get_unit_target_account( SMT_DESTINATION_ACCOUNT_PREFIX "bob" ), fc::assert_exception );
+
+   BOOST_REQUIRE( smt::unit_target::is_founder_vesting( "bob" SMT_DESTINATION_VESTING_SUFFIX ) == false );
+
+   BOOST_TEST_MESSAGE( " -- Valid account name that appears to be founder vesting" );
+   BOOST_REQUIRE( smt::unit_target::get_unit_target_account( "bob" SMT_DESTINATION_VESTING_SUFFIX ) == account_name_type( "bob" SMT_DESTINATION_VESTING_SUFFIX ) );
+}
+
+BOOST_AUTO_TEST_CASE( tick_pricing_rules_validation )
+{
+   BOOST_TEST_MESSAGE( "Testing: tick_pricing_rules_validatation" );
+
+   auto symbol = get_new_smt_symbol( 5, db );
+
+   price tick_price;
+   tick_price.base  = asset( 56, STEEM_SYMBOL );
+   tick_price.quote = asset( 10, symbol );
+
+   BOOST_TEST_MESSAGE( " -- Test success when STEEM is base symbol when paired with a token" );
+   validate_tick_pricing( tick_price );
+
+   BOOST_TEST_MESSAGE( " -- Test failure STEEM must be the base symbol when trading tokens" );
+   tick_price = ~tick_price;
+   BOOST_REQUIRE_THROW( validate_tick_pricing( tick_price ), fc::assert_exception );
+   tick_price = ~tick_price;
+
+   BOOST_TEST_MESSAGE( " -- Test failure quote symbol must be a power of 10" );
+   tick_price.quote = asset( 11, symbol );
+   BOOST_REQUIRE_THROW( validate_tick_pricing( tick_price ), fc::assert_exception );
+   tick_price.quote = asset( 10, symbol );
+
+   BOOST_TEST_MESSAGE( " -- Test failure when VESTS are the base symbol." );
+   tick_price.quote = asset( 10, VESTS_SYMBOL );
+   tick_price.base  = asset( 10, STEEM_SYMBOL );
+   BOOST_REQUIRE_THROW( validate_tick_pricing( tick_price ), fc::assert_exception );
+
+   BOOST_TEST_MESSAGE( " -- Test failure when VESTS are the quote symbol." );
+   tick_price = ~tick_price;
+   BOOST_REQUIRE_THROW( validate_tick_pricing( tick_price ), fc::assert_exception );
+
+   BOOST_TEST_MESSAGE( " -- Test failure when SMT vesting symbol is the base symbol." );
+   tick_price.quote = asset( 10, symbol.get_paired_symbol() );
+   tick_price.base  = asset( 10, STEEM_SYMBOL );
+   BOOST_REQUIRE_THROW( validate_tick_pricing( tick_price ), fc::assert_exception );
+
+   BOOST_TEST_MESSAGE( " -- Test failure when SMT vesting symbol is the quote symbol." );
+   tick_price = ~tick_price;
+   BOOST_REQUIRE_THROW( validate_tick_pricing( tick_price ), fc::assert_exception );
+
+   BOOST_TEST_MESSAGE( " -- Test failure SBD must be the base symbol when trading SBDs" );
+   tick_price.quote = asset( 10, SBD_SYMBOL );
+   tick_price.base  = asset( 10, STEEM_SYMBOL );
+   BOOST_REQUIRE_THROW( validate_tick_pricing( tick_price ), fc::assert_exception );
+
+   BOOST_TEST_MESSAGE( " -- Test success when SBD is base symbol when paired with STEEM" );
+   tick_price = ~tick_price;
+   tick_price.base.amount = 11;
+   validate_tick_pricing( tick_price );
+}
+
+BOOST_AUTO_TEST_CASE( tick_pricing_rules )
+{
+   BOOST_TEST_MESSAGE( "Testing: tick_pricing_rules" );
+
+   ACTORS( (alice)(bob)(charlie)(creator) )
+   const auto& token = create_smt( "creator", creator_private_key, 3 );
+   fund( "alice", asset( 1000000, STEEM_SYMBOL) );
+   fund( "alice", asset( 1000000, SBD_SYMBOL) );
+   fund( "alice", asset( 1000000, token) );
+   fund( "bob", asset( 1000000, STEEM_SYMBOL) );
+   fund( "bob", asset( 1000000, SBD_SYMBOL) );
+   fund( "bob", asset( 1000000, token) );
+   fund( "charlie", asset( 1000000, STEEM_SYMBOL) );
+
+   witness_create( "charlie", charlie_private_key, "foo.bar", charlie_private_key.get_public_key(), 1000 );
+   signed_transaction tx;
+
+   BOOST_TEST_MESSAGE( "--- Test failure publishing price feed when quote is not power of 10" );
+   feed_publish_operation fop;
+   fop.publisher = "charlie";
+   fop.exchange_rate = price( asset( 1000, SBD_SYMBOL ), asset( 1100000, STEEM_SYMBOL ) );
+   tx.operations.push_back( fop );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, charlie_private_key );
+   BOOST_REQUIRE_THROW( db->push_transaction( tx, database::skip_transaction_dupe_check ), fc::assert_exception );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_TEST_MESSAGE( "--- Test failure publishing price feed when SBD is not base" );
+   fop.exchange_rate = price( asset( 1000000, STEEM_SYMBOL ), asset( 1000, SBD_SYMBOL ) );
+   tx.operations.push_back( fop );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, charlie_private_key );
+   BOOST_REQUIRE_THROW( db->push_transaction( tx, database::skip_transaction_dupe_check ), fc::assert_exception );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_TEST_MESSAGE( "--- Test success publishing price feed" );
+   fop.exchange_rate = ~fop.exchange_rate;
+   tx.operations.push_back( fop );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, charlie_private_key );
+   db->push_transaction( tx, database::skip_transaction_dupe_check );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   limit_order_create2_operation op;
+
+   BOOST_TEST_MESSAGE( " -- Test success when matching two orders of the same token" );
+   op.owner = "alice";
+   op.amount_to_sell = asset( 1000, token );
+   op.exchange_rate = price( asset( 125000, STEEM_SYMBOL ), asset( 1000, token ) );
+   op.expiration = db->head_block_time() + fc::seconds( STEEM_MAX_LIMIT_ORDER_EXPIRATION );
+   tx.operations.push_back( op );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, alice_private_key );
+   db->push_transaction( tx, database::skip_transaction_dupe_check );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   op.owner = "bob";
+   op.amount_to_sell = asset( 125000, STEEM_SYMBOL );
+   op.exchange_rate = price( asset( 125000, STEEM_SYMBOL ), asset( 1000, token ) );
+   op.expiration = db->head_block_time() + fc::seconds( STEEM_MAX_LIMIT_ORDER_EXPIRATION );
+   tx.operations.push_back( op );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, bob_private_key );
+   db->push_transaction( tx, database::skip_transaction_dupe_check );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_REQUIRE( db->get_balance( "alice", STEEM_SYMBOL ) == asset( 1000000 + 125000, STEEM_SYMBOL ) );
+   BOOST_REQUIRE( db->get_balance( "alice", token )        == asset( 1000000 - 1000, token ) );
+
+   BOOST_REQUIRE( db->get_balance( "bob", STEEM_SYMBOL ) == asset( 1000000 - 125000, STEEM_SYMBOL ) );
+   BOOST_REQUIRE( db->get_balance( "bob", token )        == asset( 1000000 + 1000, token ) );
+
+   BOOST_TEST_MESSAGE( " -- Test failure when quote is not a power of 10" );
+   op.owner = "bob";
+   op.amount_to_sell = asset( 125000, STEEM_SYMBOL );
+   op.exchange_rate = price( asset( 1000, SBD_SYMBOL ), asset( 1100000, STEEM_SYMBOL ) );
+   op.expiration = db->head_block_time() + fc::seconds( STEEM_MAX_LIMIT_ORDER_EXPIRATION );
+   tx.operations.push_back( op );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, bob_private_key );
+   BOOST_REQUIRE_THROW( db->push_transaction( tx, database::skip_transaction_dupe_check ), fc::assert_exception );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_TEST_MESSAGE( " -- Test failure when STEEM is not base" );
+   op.owner = "bob";
+   op.amount_to_sell = asset( 125000, STEEM_SYMBOL );
+   op.exchange_rate = price( asset( 10000, token ), asset( 125000, STEEM_SYMBOL ) );
+   op.expiration = db->head_block_time() + fc::seconds( STEEM_MAX_LIMIT_ORDER_EXPIRATION );
+   tx.operations.push_back( op );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, bob_private_key );
+   BOOST_REQUIRE_THROW( db->push_transaction( tx, database::skip_transaction_dupe_check ), fc::assert_exception );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_TEST_MESSAGE( " -- Test failure when SBD is not base" );
+   op.owner = "bob";
+   op.amount_to_sell = asset( 1000000, STEEM_SYMBOL );
+   op.exchange_rate = price( asset( 10000, STEEM_SYMBOL ), asset( 1000000, SBD_SYMBOL ) );
+   op.expiration = db->head_block_time() + fc::seconds( STEEM_MAX_LIMIT_ORDER_EXPIRATION );
+   tx.operations.push_back( op );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, bob_private_key );
+   BOOST_REQUIRE_THROW( db->push_transaction( tx, database::skip_transaction_dupe_check ), fc::assert_exception );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_TEST_MESSAGE( " -- Test success when SBD is base" );
+   op.owner = "bob";
+   op.amount_to_sell = asset( 10000, STEEM_SYMBOL );
+   op.exchange_rate = price( asset( 1000000, SBD_SYMBOL ), asset( 10000, STEEM_SYMBOL ) );
+   op.expiration = db->head_block_time() + fc::seconds( STEEM_MAX_LIMIT_ORDER_EXPIRATION );
+   tx.operations.push_back( op );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, bob_private_key );
+   db->push_transaction( tx, database::skip_transaction_dupe_check );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_TEST_MESSAGE( " -- Test matching SBD:STEEM" );
+   op.owner = "alice";
+   op.amount_to_sell = asset( 1000000, SBD_SYMBOL );
+   op.exchange_rate = price( asset( 1000000, SBD_SYMBOL ), asset( 10000, STEEM_SYMBOL ) );
+   op.expiration = db->head_block_time() + fc::seconds( STEEM_MAX_LIMIT_ORDER_EXPIRATION );
+   tx.operations.push_back( op );
+   tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+   sign( tx, alice_private_key );
+   db->push_transaction( tx, database::skip_transaction_dupe_check );
+   tx.operations.clear();
+   tx.signatures.clear();
+
+   BOOST_REQUIRE( db->get_balance( "alice", STEEM_SYMBOL ) == asset( 1000000 + 125000 + 10000, STEEM_SYMBOL ) );
+   BOOST_REQUIRE( db->get_balance( "alice", SBD_SYMBOL )   == asset( 1000000 - 1000000, SBD_SYMBOL ) );
+
+   BOOST_REQUIRE( db->get_balance( "bob", STEEM_SYMBOL ) == asset( 1000000 - 125000 - 10000, STEEM_SYMBOL ) );
+   BOOST_REQUIRE( db->get_balance( "bob", SBD_SYMBOL )   == asset( 1000000 + 1000000, SBD_SYMBOL ) );
+}
+
+BOOST_AUTO_TEST_CASE( price_as_decimal_and_real )
+{
+   BOOST_TEST_MESSAGE( "Testing: price_as_decimal_and_real" );
+
+   const auto symbol = get_new_smt_symbol( 3, this->db );
+
+   const auto float_cmp = []( double a, double b, double epsilon = 0.00005f ) -> bool
+   {
+      return ( std::fabs( a - b ) < epsilon );
+   };
+
+   price p;
+   p.base  = asset( 123456, SBD_SYMBOL );
+   p.quote = asset( 1000, STEEM_SYMBOL );
+
+   BOOST_TEST_MESSAGE( " -- Testing SBD:STEEM pairing with Tick Pricing Rules" );
+
+   BOOST_REQUIRE( p.as_decimal() == "123.456" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 123.456f ) );
+
+   BOOST_TEST_MESSAGE( " -- Testing SBD:STEEM inverse pairing with Tick Pricing Rules" );
+
+   p = ~p;
+
+   BOOST_REQUIRE( p.as_decimal() == "123.456" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 123.456f ) );
+
+   BOOST_TEST_MESSAGE( " -- Testing STEEM:SMT pairing with Tick Pricing Rules" );
+
+   p.base  = asset( 123, STEEM_SYMBOL );
+   p.quote = asset( 10000, symbol );
+
+   BOOST_REQUIRE( p.as_decimal() == "0.0123" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 0.0123f ) );
+
+   BOOST_TEST_MESSAGE( " -- Testing STEEM:SMT inverse pairing with Tick Pricing Rules" );
+
+   p = ~p;
+
+   BOOST_REQUIRE( p.as_decimal() == "0.0123" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 0.0123f ) );
+
+   BOOST_TEST_MESSAGE( " -- Testing STEEM:SMT pairing without Tick Pricing Rules" );
+
+   p.base  = asset( 123, STEEM_SYMBOL );
+   p.quote = asset( 10001, symbol );
+
+   BOOST_REQUIRE( p.as_decimal() == "0.0122987701229877?" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 0.0122987701229877f ) );
+
+   BOOST_TEST_MESSAGE( " -- Testing STEEM:SMT inverse pairing without Tick Pricing Rules" );
+
+   p = ~p;
+
+   BOOST_REQUIRE( p.as_decimal() == "0.0122987701229877?" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 0.0122987701229877f ) );
+
+   BOOST_TEST_MESSAGE( " -- Testing SBD:STEEM pairing without Tick Pricing Rules" );
+
+   p.base  = asset( 123, SBD_SYMBOL );
+   p.quote = asset( 10001, STEEM_SYMBOL );
+
+   BOOST_REQUIRE( p.as_decimal() == "0.0122987701229877?" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 0.0122987701229877f ) );
+
+   BOOST_TEST_MESSAGE( " -- Testing SBD:STEEM inverse pairing without Tick Pricing Rules" );
+
+   p = ~p;
+
+   BOOST_REQUIRE( p.as_decimal() == "0.0122987701229877?" );
+   BOOST_REQUIRE( float_cmp( p.as_real(), 0.0122987701229877f ) );
+}
+
+BOOST_AUTO_TEST_CASE( token_emission_timing )
+{
+   try
+   {
+      BOOST_TEST_MESSAGE( "Testing: smt_standard_token_emissions" );
+      ACTORS( (alice)(bob)(sam)(dave) )
+
+      generate_block();
+
+      BOOST_TEST_MESSAGE( " -- SMT creation" );
+      auto symbol = create_smt( "alice", alice_private_key, 3 );
+      signed_transaction tx;
+
+      generate_block();
+
+      smt_setup_emissions_operation op;
+      op.control_account = "alice";
+      op.symbol          = symbol;
+      op.schedule_time   = db->head_block_time() + fc::days( 1 );
+      op.emissions_unit.token_unit[ "alice" ] = 1;
+      op.interval_seconds = SMT_EMISSION_MIN_INTERVAL_SECONDS;
+      op.emission_count   = 1;
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.lep_abs_amount = 100;
+      op.rep_abs_amount = 200;
+      op.lep_rel_amount_numerator = 1;
+      op.rep_rel_amount_numerator = 2;
+      op.rel_amount_denom_bits    = 7;
+      tx.operations.push_back( op );
+
+      op.schedule_time = op.schedule_time + fc::hours( 6 );
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.emission_count = 4;
+      tx.operations.push_back( op );
+
+      op.schedule_time = op.schedule_time + fc::days( 1 );
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.emission_count = 4;
+      tx.operations.push_back( op );
+
+      op.schedule_time = op.schedule_time + fc::days( 1 );
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.emission_count = 8;
+      tx.operations.push_back( op );
+
+      op.schedule_time = op.schedule_time + fc::days( 2 );
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.emission_count = 1;
+      tx.operations.push_back( op );
+
+      op.schedule_time = op.schedule_time + fc::hours( 6 );
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.emission_count = 1;
+      tx.operations.push_back( op );
+
+      BOOST_TEST_MESSAGE( " -- Success on valid token emission setup" );
+      tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+      sign( tx, alice_private_key );
+      db->push_transaction( tx, 0 );
+      tx.operations.clear();
+      tx.signatures.clear();
+
+      smt_setup_emissions_operation fail_op;
+      fail_op = op;
+      fail_op.schedule_time = op.schedule_time + fc::hours( 5 ) + fc::minutes( 59 ) + fc::seconds( 59 );
+      fail_op.lep_time = fail_op.schedule_time;
+      fail_op.rep_time = fail_op.schedule_time;
+      fail_op.emission_count = 1;
+      tx.operations.push_back( fail_op );
+
+      BOOST_TEST_MESSAGE( " -- Failure on token emission emitting too soon" );
+      tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+      sign( tx, alice_private_key );
+      BOOST_REQUIRE_THROW( db->push_transaction( tx, 0 ), fc::assert_exception );
+      tx.operations.clear();
+      tx.signatures.clear();
+
+      op.schedule_time = op.schedule_time + fc::hours( 6 );
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.emission_count = 4;
+      tx.operations.push_back( op );
+
+      BOOST_TEST_MESSAGE( " -- Success on valid additional token emission" );
+      tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+      sign( tx, alice_private_key );
+      db->push_transaction( tx, 0 );
+      tx.operations.clear();
+      tx.signatures.clear();
+
+      fail_op = op;
+      fail_op.schedule_time = op.schedule_time + fc::days( 1 ) - fc::seconds( 1 );
+      fail_op.lep_time = fail_op.schedule_time;
+      fail_op.rep_time = fail_op.schedule_time;
+      fail_op.emission_count = 1;
+      tx.operations.push_back( fail_op );
+
+      BOOST_TEST_MESSAGE( " -- Failure on token emission emitting too soon" );
+      tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+      sign( tx, alice_private_key );
+      BOOST_REQUIRE_THROW( db->push_transaction( tx, 0 ), fc::assert_exception );
+      tx.operations.clear();
+      tx.signatures.clear();
+
+      op.schedule_time = op.schedule_time + fc::days( 1 );
+      op.lep_time = op.schedule_time;
+      op.rep_time = op.schedule_time;
+      op.emission_count = 1;
+      tx.operations.push_back( op );
+
+      BOOST_TEST_MESSAGE( " -- Success on valid additional token emission" );
+      tx.set_expiration( db->head_block_time() + STEEM_MAX_TIME_UNTIL_EXPIRATION );
+      sign( tx, alice_private_key );
+      db->push_transaction( tx, 0 );
+      tx.operations.clear();
+      tx.signatures.clear();
+   }
+   FC_LOG_AND_RETHROW()
+}
+
+/*
+ * SMT legacy tests
+ *
+ * The logic tests in legacy tests *should* be entirely duplicated in smt_operation_tests.cpp
+ * We are keeping these tests around to provide an additional layer re-assurance for the time being
+ */
+FC_TODO( "Remove SMT legacy tests and ensure code coverage is not reduced" );
+
 BOOST_AUTO_TEST_CASE( setup_validate )
 {
    try
@@ -288,178 +647,6 @@ BOOST_AUTO_TEST_CASE( setup_validate )
       op.contribution_begin_time = t50;
       op.contribution_end_time = t100;
       op.launch_time = t300;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      op.launch_time = t200;
-      smt_capped_generation_policy gp = get_capped_generation_policy
-      (
-         get_generation_unit( { { "xyz", 1 } }, { { "xyz2", 2 } } )/*pre_soft_cap_unit*/,
-         get_generation_unit()/*post_soft_cap_unit*/,
-         STEEM_100_PERCENT/*soft_cap_percent*/,
-         1/*min_unit_ratio*/,
-         2/*max_unit_ratio*/
-      );
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      units to_many_units;
-      for( uint32_t i = 0; i < SMT_MAX_UNIT_ROUTES + 1; ++i )
-         to_many_units.emplace( "alice" + std::to_string( i ), 1 );
-
-      //FC_ASSERT( steem_unit.size() <= SMT_MAX_UNIT_ROUTES )
-      gp.pre_soft_cap_unit.steem_unit = to_many_units;
-      gp.pre_soft_cap_unit.token_unit = { { "bob",3 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "bob2", 33 } };
-      gp.pre_soft_cap_unit.token_unit = to_many_units;
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      //Invalid account
-      gp.pre_soft_cap_unit.steem_unit = { { "{}{}", 12 } };
-      gp.pre_soft_cap_unit.token_unit = { { "xyz", 13 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "xyz2", 14 } };
-      gp.pre_soft_cap_unit.token_unit = { { "{}", 15 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      //Invalid account -> valid is '$from'
-      gp.pre_soft_cap_unit.steem_unit = { { "$fromx", 1 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from", 2 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "$from", 3 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from_", 4 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      //Invalid account -> valid is '$from.vesting'
-      gp.pre_soft_cap_unit.steem_unit = { { "$from.vestingx", 2 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from.vesting", 222 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "$from.vesting", 13 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from.vesting.vesting", 3 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      //FC_ASSERT( steem_unit.value > 0 );
-      gp.pre_soft_cap_unit.steem_unit = { { "$from.vesting", 0 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from.vesting", 2 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "$from.vesting", 10 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from.vesting", 0 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      //FC_ASSERT( steem_unit.value > 0 );
-      gp.pre_soft_cap_unit.steem_unit = { { "$from", 0 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from", 100 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "$from", 33 } };
-      gp.pre_soft_cap_unit.token_unit = { { "$from", 0 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      //FC_ASSERT( steem_unit.value > 0 );
-      gp.pre_soft_cap_unit.steem_unit = { { "qprst", 0 } };
-      gp.pre_soft_cap_unit.token_unit = { { "qprst", 67 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "my_account2", 55 } };
-      gp.pre_soft_cap_unit.token_unit = { { "my_account", 0 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.pre_soft_cap_unit.steem_unit = { { "bob", 2 }, { "$from.vesting", 3 }, { "$from", 4 } };
-      gp.pre_soft_cap_unit.token_unit = { { "alice", 5 }, { "$from", 3 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.soft_cap_percent = 0;
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.soft_cap_percent = STEEM_100_PERCENT + 1;
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.soft_cap_percent = STEEM_100_PERCENT;
-      gp.post_soft_cap_unit.steem_unit = { { "bob", 2 } };
-      gp.post_soft_cap_unit.token_unit = {};
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.soft_cap_percent = STEEM_100_PERCENT;
-      gp.post_soft_cap_unit.steem_unit = {};
-      gp.post_soft_cap_unit.token_unit = { { "alice", 3 } };
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.soft_cap_percent = STEEM_100_PERCENT / 2;
-      gp.post_soft_cap_unit.steem_unit = {};
-      gp.post_soft_cap_unit.token_unit = {};
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      gp.soft_cap_percent = STEEM_100_PERCENT;
-      gp.post_soft_cap_unit.steem_unit = {};
-      gp.post_soft_cap_unit.token_unit = {};
-      op.initial_generation_policy = gp;
-      STEEM_REQUIRE_THROW( op.validate(), fc::exception );
-
-      op.steem_units_soft_cap = SMT_MIN_SOFT_CAP_STEEM_UNITS;
-      op.steem_units_hard_cap = SMT_MIN_HARD_CAP_STEEM_UNITS;
-      op.validate();
-
-      gp.max_unit_ratio = ( ( 11 * SMT_MIN_HARD_CAP_STEEM_UNITS ) / SMT_MIN_SATURATION_STEEM_UNITS ) * 2;
-      op.initial_generation_policy = gp;
-      op.validate();
-
-      gp.max_unit_ratio = 2;
-      op.initial_generation_policy = gp;
-      op.validate();
-
-      smt_capped_generation_policy gp_valid = gp;
-
-      gp.soft_cap_percent = 1;
-      gp.post_soft_cap_unit.steem_unit = { { "bob", 2 } };
-      op.initial_generation_policy = gp;
-      op.validate();
-
-      gp = gp_valid;
-      op.initial_generation_policy = gp;
-      op.validate();
-
-      uint16_t max_val_16 = std::numeric_limits<uint16_t>::max();
-      uint32_t max_val_32 = std::numeric_limits<uint32_t>::max();
-
-      gp.soft_cap_percent = STEEM_100_PERCENT - 1;
-      gp.min_unit_ratio = max_val_32;
-      gp.post_soft_cap_unit.steem_unit = { { "abc", 1 } };
-      gp.post_soft_cap_unit.token_unit = { { "abc1", max_val_16 } };
-      gp.pre_soft_cap_unit.token_unit = { { "abc2", max_val_16 } };
-      op.initial_generation_policy = gp;
-      op.validate();
-
-      gp.min_unit_ratio = 1;
-      gp.post_soft_cap_unit.token_unit = { { "abc1", 1 } };
-      gp.pre_soft_cap_unit.token_unit = { { "abc2", 1 } };
-      gp.post_soft_cap_unit.steem_unit = { { "abc3", max_val_16 } };
-      gp.pre_soft_cap_unit.steem_unit = { { "abc34", max_val_16 } };
-      op.initial_generation_policy = gp;
       op.validate();
    }
    FC_LOG_AND_RETHROW()
@@ -492,7 +679,7 @@ BOOST_AUTO_TEST_CASE( setup_apply )
 {
    try
    {
-      ACTORS( (alice)(bob) )
+      ACTORS( (alice)(bob)(xyz)(xyz2) )
 
       generate_block();
 
@@ -503,22 +690,10 @@ BOOST_AUTO_TEST_CASE( setup_apply )
 
       smt_setup_operation op;
       op.control_account = "alice";
-      op.steem_units_soft_cap = SMT_MIN_SOFT_CAP_STEEM_UNITS;
-      op.steem_units_hard_cap = SMT_MIN_HARD_CAP_STEEM_UNITS;
-
-      smt_capped_generation_policy gp = get_capped_generation_policy
-      (
-         get_generation_unit( { { "xyz", 1 } }, { { "xyz2", 2 } } )/*pre_soft_cap_unit*/,
-         get_generation_unit()/*post_soft_cap_unit*/,
-         STEEM_100_PERCENT/*soft_cap_percent*/,
-         1/*min_unit_ratio*/,
-         2/*max_unit_ratio*/
-      );
 
       fc::time_point_sec start_time        = fc::variant( "2021-01-01T00:00:00" ).as< fc::time_point_sec >();
       fc::time_point_sec start_time_plus_1 = start_time + fc::seconds(1);
 
-      op.initial_generation_policy = gp;
       op.contribution_begin_time = start_time;
       op.contribution_end_time = op.launch_time = start_time_plus_1;
 
@@ -548,14 +723,6 @@ BOOST_AUTO_TEST_CASE( setup_apply )
    }
    FC_LOG_AND_RETHROW()
 }
-
-/*
- * SMT legacy tests
- *
- * The logic tests in legacy tests *should* be entirely duplicated in smt_operation_tests.cpp
- * We are keeping these tests around to provide an additional layer re-assurance for the time being
- */
-FC_TODO( "Remove SMT legacy tests and ensure code coverage is not reduced" );
 
 BOOST_AUTO_TEST_CASE( smt_create_apply )
 {

@@ -8,8 +8,8 @@
 #include <steem/chain/util/smt_token.hpp>
 
 #include <steem/protocol/smt_operations.hpp>
+#include <steem/protocol/smt_util.hpp>
 
-#ifdef STEEM_ENABLE_SMT
 namespace steem { namespace chain {
 
 namespace {
@@ -98,8 +98,9 @@ void smt_create_evaluator::do_apply( const smt_create_operation& o )
    {
       FC_ASSERT( token_ptr != nullptr, "Cannot reset a non-existent SMT. Did you forget to specify the creation fee?" );
       FC_ASSERT( token_ptr->control_account == o.control_account, "You do not control this SMT. Control Account: ${a}", ("a", token_ptr->control_account) );
-      FC_ASSERT( token_ptr->phase == smt_phase::account_elevated, "SMT cannot be reset if setup is completed. Phase: ${p}", ("p", token_ptr->phase) );
+      FC_ASSERT( token_ptr->phase == smt_phase::setup, "SMT cannot be reset if setup is completed. Phase: ${p}", ("p", token_ptr->phase) );
       FC_ASSERT( !util::smt::last_emission_time( _db, token_ptr->liquid_symbol ), "Cannot reset an SMT that has existing token emissions." );
+      FC_ASSERT( util::smt::ico::ico_tier_size(_db, token_ptr->liquid_symbol ) == 0, "Cannot reset an SMT that has existing ICO tiers." );
 
       _db.remove( *token_ptr );
    }
@@ -109,7 +110,9 @@ void smt_create_evaluator::do_apply( const smt_create_operation& o )
    {
       token.liquid_symbol = o.symbol;
       token.control_account = o.control_account;
+      token.desired_ticker = o.desired_ticker;
       token.market_maker.token_balance = asset( 0, token.liquid_symbol );
+      token.reward_balance = asset( 0, token.liquid_symbol );
    });
 
    remove_from_nai_pool( _db, o.symbol );
@@ -118,51 +121,163 @@ void smt_create_evaluator::do_apply( const smt_create_operation& o )
       replenish_nai_pool( _db );
 }
 
-struct smt_setup_evaluator_visitor
+static void verify_accounts( database& db, const flat_map< unit_target_type, uint16_t >& units )
 {
-   const smt_ico_object& _ico;
+   for ( auto& unit : units )
+   {
+      if ( !protocol::smt::unit_target::is_account_name_type( unit.first ) )
+         continue;
+
+      auto account_name = protocol::smt::unit_target::get_unit_target_account( unit.first );
+      const auto* account = db.find_account( account_name );
+      FC_ASSERT( account != nullptr, "The provided account unit target ${target} does not exist.", ("target", unit.first) );
+   }
+}
+
+struct smt_generation_policy_verifier
+{
    database& _db;
 
-   smt_setup_evaluator_visitor( const smt_ico_object& ico, database& db ): _ico( ico ), _db( db ){}
+   smt_generation_policy_verifier( database& db ): _db( db ){}
 
    typedef void result_type;
 
    void operator()( const smt_capped_generation_policy& capped_generation_policy ) const
    {
-      _db.modify( _ico, [&]( smt_ico_object& ico )
-      {
-         ico.capped_generation_policy = capped_generation_policy;
-      });
+      verify_accounts( _db, capped_generation_policy.generation_unit.steem_unit );
+      verify_accounts( _db, capped_generation_policy.generation_unit.token_unit );
+   }
+};
+
+template< class T >
+struct smt_generation_policy_visitor
+{
+   T& _obj;
+
+   smt_generation_policy_visitor( T& o ): _obj( o ) {}
+
+   typedef void result_type;
+
+   void operator()( const smt_capped_generation_policy& capped_generation_policy ) const
+   {
+      _obj = capped_generation_policy;
    }
 };
 
 void smt_setup_evaluator::do_apply( const smt_setup_operation& o )
 {
    FC_ASSERT( _db.has_hardfork( STEEM_SMT_HARDFORK ), "SMT functionality not enabled until hardfork ${hf}", ("hf", STEEM_SMT_HARDFORK) );
-#pragma message ("TODO: Adjust assertion below and add/modify negative tests appropriately.")
-   const auto* _token = _db.find< smt_token_object, by_symbol >( o.symbol );
-   FC_ASSERT( _token, "SMT ${ac} not elevated yet.",("ac", o.control_account) );
 
-   _db.modify(  *_token, [&]( smt_token_object& token )
+   const smt_token_object& _token = common_pre_setup_evaluation( _db, o.symbol, o.control_account );
+   share_type hard_cap;
+
+   if ( o.steem_satoshi_min > 0 )
    {
-#pragma message ("TODO: Add/modify test to check the token phase correctly set.")
+      auto possible_hard_cap = util::smt::ico::get_ico_steem_hard_cap( _db, o.symbol );
+
+      FC_ASSERT( possible_hard_cap.valid(),
+         "An SMT with a Steem Satoshi Minimum of ${s} cannot succeed without an ICO tier.", ("s", o.steem_satoshi_min) );
+
+      hard_cap = *possible_hard_cap;
+
+      FC_ASSERT( o.steem_satoshi_min <= hard_cap,
+         "The Steem Satoshi Minimum must be less than the hard cap. Steem Satoshi Minimum: ${s}, Hard Cap: ${c}",
+         ("s", o.steem_satoshi_min)("c", hard_cap) );
+   }
+
+   auto ico_tiers = _db.get_index< smt_ico_tier_index, by_symbol_steem_satoshi_cap >().equal_range( _token.liquid_symbol );
+   share_type prev_tier_cap = 0;
+   share_type total_tokens = 0;
+
+   for( ; ico_tiers.first != ico_tiers.second; ++ico_tiers.first )
+   {
+      fc::uint128_t max_token_units = ( hard_cap / ico_tiers.first->generation_unit.steem_unit_sum() ).value * o.min_unit_ratio;
+      FC_ASSERT( max_token_units.hi == 0 && max_token_units.lo <= uint64_t( std::numeric_limits<int64_t>::max() ),
+         "Overflow detected in ICO tier '${t}'", ("tier", *ico_tiers.first) );
+
+      // This is done with share_types, which are safe< int64_t >. Overflow is detected but does not provide
+      // a useful error message. Do the checks manually to provide actionable information.
+      fc::uint128_t new_tokens = ( ( ico_tiers.first->steem_satoshi_cap - prev_tier_cap ).value / ico_tiers.first->generation_unit.steem_unit_sum() );
+
+      new_tokens *= o.min_unit_ratio;
+      FC_ASSERT( new_tokens.hi == 0 && new_tokens.lo <= uint64_t( std::numeric_limits<int64_t>::max() ),
+         "Overflow detected in ICO tier '${t}'", ("tier", *ico_tiers.first) );
+
+      new_tokens *= ico_tiers.first->generation_unit.token_unit_sum();
+      FC_ASSERT( new_tokens.hi == 0 && new_tokens.lo <= uint64_t( std::numeric_limits<int64_t>::max() ),
+         "Overflow detected in ICO tier '${t}'", ("tier", *ico_tiers.first) );
+
+      total_tokens += new_tokens.to_int64();
+      prev_tier_cap = ico_tiers.first->steem_satoshi_cap;
+   }
+
+   FC_ASSERT( total_tokens < STEEM_MAX_SHARE_SUPPLY,
+      "Max token supply for ${n} can exceed ${m}. Calculated: ${c}",
+      ("n", _token.liquid_symbol)
+      ("m", STEEM_MAX_SHARE_SUPPLY)
+      ("c", total_tokens) );
+
+   _db.modify( _token, [&]( smt_token_object& token )
+   {
       token.phase = smt_phase::setup_completed;
-      token.control_account = o.control_account;
       token.max_supply = o.max_supply;
    } );
 
-   auto token_ico = _db.create< smt_ico_object >( [&] ( smt_ico_object& token_ico_obj )
+   _db.create< smt_ico_object >( [&] ( smt_ico_object& token_ico_obj )
    {
-      token_ico_obj.symbol = _token->liquid_symbol;
+      token_ico_obj.symbol = _token.liquid_symbol;
       token_ico_obj.contribution_begin_time = o.contribution_begin_time;
       token_ico_obj.contribution_end_time = o.contribution_end_time;
       token_ico_obj.launch_time = o.launch_time;
-      token_ico_obj.steem_units_soft_cap = o.steem_units_soft_cap;
-      token_ico_obj.steem_units_hard_cap = o.steem_units_hard_cap;
+      token_ico_obj.steem_satoshi_min = o.steem_satoshi_min;
+      token_ico_obj.min_unit_ratio = o.min_unit_ratio;
+      token_ico_obj.max_unit_ratio = o.max_unit_ratio;
    } );
 
-   smt_setup_evaluator_visitor visitor( token_ico, _db );
-   o.initial_generation_policy.visit( visitor );
+   smt_ico_launch_action ico_launch_action;
+   ico_launch_action.control_account = _token.control_account;
+   ico_launch_action.symbol = _token.liquid_symbol;
+   _db.push_required_action( ico_launch_action, o.contribution_begin_time );
+}
+
+void smt_setup_ico_tier_evaluator::do_apply( const smt_setup_ico_tier_operation& o )
+{
+   FC_ASSERT( _db.has_hardfork( STEEM_SMT_HARDFORK ), "SMT functionality not enabled until hardfork ${hf}", ("hf", STEEM_SMT_HARDFORK) );
+
+   const smt_token_object& token = common_pre_setup_evaluation( _db, o.symbol, o.control_account );
+
+   smt_capped_generation_policy generation_policy;
+   smt_generation_policy_visitor< smt_capped_generation_policy > visitor( generation_policy );
+   o.generation_policy.visit( visitor );
+
+   if ( o.remove )
+   {
+      auto key = boost::make_tuple( token.liquid_symbol, o.steem_satoshi_cap );
+      const auto* ito = _db.find< smt_ico_tier_object, by_symbol_steem_satoshi_cap >( key );
+
+      FC_ASSERT( ito != nullptr,
+         "The specified ICO tier does not exist. Symbol: ${s}, Steem Satoshi Cap: ${c}",
+         ("s", token.liquid_symbol)("c", o.steem_satoshi_cap)
+      );
+
+      _db.remove( *ito );
+   }
+   else
+   {
+      auto num_ico_tiers = util::smt::ico::ico_tier_size( _db, o.symbol );
+      FC_ASSERT( num_ico_tiers < SMT_MAX_ICO_TIERS,
+         "There can be a maximum of ${n} ICO tiers. Current: ${c}", ("n", SMT_MAX_ICO_TIERS)("c", num_ico_tiers) );
+
+      smt_generation_policy_verifier generation_policy_verifier( _db );
+      o.generation_policy.visit( generation_policy_verifier );
+
+      _db.create< smt_ico_tier_object >( [&]( smt_ico_tier_object& ito )
+      {
+         ito.symbol                   = token.liquid_symbol;
+         ito.steem_satoshi_cap        = o.steem_satoshi_cap;
+         ito.generation_unit          = generation_policy.generation_unit;
+      });
+   }
 }
 
 void smt_setup_emissions_evaluator::do_apply( const smt_setup_emissions_operation& o )
@@ -178,17 +293,7 @@ void smt_setup_emissions_evaluator::do_apply( const smt_setup_emissions_operatio
 
       FC_ASSERT(
          last_emission->symbol == o.symbol &&
-         last_emission->schedule_time == o.schedule_time &&
-         last_emission->emissions_unit.token_unit == o.emissions_unit.token_unit &&
-         last_emission->interval_seconds == o.interval_seconds &&
-         last_emission->interval_count == o.interval_count &&
-         last_emission->lep_time == o.lep_time &&
-         last_emission->rep_time == o.rep_time &&
-         last_emission->lep_abs_amount == o.lep_abs_amount &&
-         last_emission->rep_abs_amount == o.rep_abs_amount &&
-         last_emission->lep_rel_amount_numerator == o.lep_rel_amount_numerator &&
-         last_emission->rep_rel_amount_numerator == o.rep_rel_amount_numerator &&
-         last_emission->rel_amount_denom_bits == o.rel_amount_denom_bits,
+         last_emission->schedule_time == o.schedule_time,
          "SMT emissions must be removed from latest to earliest, last emission: ${le}. Current: ${c}", ("le", *last_emission)("c", o)
       );
 
@@ -202,9 +307,21 @@ void smt_setup_emissions_evaluator::do_apply( const smt_setup_emissions_operatio
 
       if ( end_time.valid() )
       {
-         FC_ASSERT( o.schedule_time > *end_time,
-            "SMT emissions cannot overlap with existing ranges and must be in chronological order, last emission time: ${end}",
-            ("end", *end_time) );
+         FC_ASSERT( ( time_point_sec::maximum() - *end_time ) > fc::seconds( SMT_EMISSION_MIN_INTERVAL_SECONDS ),
+            "Cannot add token emission when the prior emission is indefinite." );
+         FC_ASSERT( o.schedule_time >= *end_time + SMT_EMISSION_MIN_INTERVAL_SECONDS,
+            "New token emissions must begin no earlier than ${s} seconds after the last emission. Last emission time: ${end}",
+            ("s", SMT_EMISSION_MIN_INTERVAL_SECONDS)("end", *end_time) );
+      }
+
+      for ( const auto& e : o.emissions_unit.token_unit )
+      {
+         if ( smt::unit_target::is_account_name_type( e.first ) )
+         {
+            std::string name = smt::unit_target::get_unit_target_account( e.first );
+            auto acc = _db.find< account_object, by_name >( name );
+            FC_ASSERT( acc != nullptr, "Invalid emission destination, account ${a} must exist", ("a", name) );
+         }
       }
 
       _db.create< smt_token_emissions_object >( [&]( smt_token_emissions_object& eo )
@@ -213,7 +330,7 @@ void smt_setup_emissions_evaluator::do_apply( const smt_setup_emissions_operatio
          eo.schedule_time = o.schedule_time;
          eo.emissions_unit = o.emissions_unit;
          eo.interval_seconds = o.interval_seconds;
-         eo.interval_count = o.interval_count;
+         eo.emission_count = o.emission_count;
          eo.lep_time = o.lep_time;
          eo.rep_time = o.rep_time;
          eo.lep_abs_amount = o.lep_abs_amount;
@@ -221,6 +338,7 @@ void smt_setup_emissions_evaluator::do_apply( const smt_setup_emissions_operatio
          eo.lep_rel_amount_numerator = o.lep_rel_amount_numerator;
          eo.rep_rel_amount_numerator = o.rep_rel_amount_numerator;
          eo.rel_amount_denom_bits = o.rel_amount_denom_bits;
+         eo.floor_emissions = o.floor_emissions;
       });
    }
 }
@@ -297,15 +415,19 @@ void smt_contribute_evaluator::do_apply( const smt_contribute_operation& o )
 
       const smt_token_object* token = util::smt::find_token( _db, o.symbol );
       FC_ASSERT( token != nullptr, "Cannot contribute to an unknown SMT" );
-      FC_ASSERT( token->phase >= smt_phase::contribution_begin_time_completed, "SMT has yet to enter the contribution phase" );
-      FC_ASSERT( token->phase < smt_phase::contribution_end_time_completed, "SMT is no longer in the contribution phase" );
+      FC_ASSERT( token->phase >= smt_phase::ico, "SMT has not begun accepting contributions" );
+      FC_ASSERT( token->phase < smt_phase::ico_completed, "SMT is no longer accepting contributions" );
+
+      auto possible_hard_cap = util::smt::ico::get_ico_steem_hard_cap( _db, o.symbol );
+      FC_ASSERT( possible_hard_cap.valid(), "The specified token does not feature an ICO" );
+      share_type hard_cap = *possible_hard_cap;
 
       const smt_ico_object* token_ico = _db.find< smt_ico_object, by_symbol >( token->liquid_symbol );
       FC_ASSERT( token_ico != nullptr, "Unable to find ICO data for symbol: ${sym}", ("sym", token->liquid_symbol) );
-      FC_ASSERT( token_ico->contributed.amount < token_ico->steem_units_hard_cap, "SMT ICO has reached its hard cap and no longer accepts contributions" );
-      FC_ASSERT( token_ico->contributed.amount + o.contribution.amount <= token_ico->steem_units_hard_cap,
+      FC_ASSERT( token_ico->contributed.amount < hard_cap, "SMT ICO has reached its hard cap and no longer accepts contributions" );
+      FC_ASSERT( token_ico->contributed.amount + o.contribution.amount <= hard_cap,
          "The proposed contribution would exceed the ICO hard cap, maximum possible contribution: ${c}",
-         ("c", asset( token_ico->steem_units_hard_cap - token_ico->contributed.amount, STEEM_SYMBOL )) );
+         ("c", asset( hard_cap - token_ico->contributed.amount, STEEM_SYMBOL )) );
 
       auto key = boost::tuple< asset_symbol_type, account_name_type, uint32_t >( o.contribution.symbol, o.contributor, o.contribution_id );
       auto contrib_ptr = _db.find< smt_contribution_object, by_symbol_contributor >( key );
@@ -330,4 +452,3 @@ void smt_contribute_evaluator::do_apply( const smt_contribute_operation& o )
 }
 
 } }
-#endif

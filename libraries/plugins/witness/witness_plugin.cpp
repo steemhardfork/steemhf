@@ -1,3 +1,5 @@
+#include <steem/chain/steem_fwd.hpp>
+
 #include <steem/plugins/witness/witness_plugin.hpp>
 #include <steem/plugins/witness/witness_plugin_objects.hpp>
 
@@ -95,12 +97,10 @@ namespace detail {
       const comment_object& _c;
       const database& _db;
 
-#ifdef STEEM_ENABLE_SMT
       void operator()( const allowed_vote_assets& va) const
       {
          FC_TODO("To be implemented  suppport for allowed_vote_assets");
       }
-#endif
 
       void operator()( const comment_payout_beneficiaries& cpb )const
       {

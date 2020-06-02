@@ -4,6 +4,7 @@
 
 #include <steem/plugins/database_api/database_api.hpp>
 #include <steem/plugins/database_api/database_api_plugin.hpp>
+#include <steem/plugins/database_api/util/iterate_results.hpp>
 
 #include <steem/protocol/get_config.hpp>
 #include <steem/protocol/exceptions.hpp>
@@ -17,7 +18,7 @@
 
 namespace steem { namespace plugins { namespace database_api {
 
-
+using namespace util;
 
 class database_api_impl
 {
@@ -77,7 +78,6 @@ class database_api_impl
          (verify_authority)
          (verify_account_authority)
          (verify_signatures)
-#ifdef STEEM_ENABLE_SMT
          (get_nai_pool)
          (list_smt_contributions)
          (find_smt_contributions)
@@ -85,52 +85,9 @@ class database_api_impl
          (find_smt_tokens)
          (list_smt_token_emissions)
          (find_smt_token_emissions)
-#endif
+         (list_smt_token_balances)
+         (find_smt_token_balances)
       )
-
-      template< typename ResultType >
-      static ResultType on_push_default( const ResultType& r ) { return r; }
-
-      template< typename ValueType >
-      static bool filter_default( const ValueType& r ) { return true; }
-
-      template<typename IndexType, typename OrderType, typename StartType, typename ResultType, typename OnPushType, typename FilterType>
-      void iterate_results(
-         StartType start,
-         std::vector<ResultType>& result,
-         uint32_t limit,
-         OnPushType&& on_push,
-         FilterType&& filter,
-         order_direction_type direction = ascending )
-      {
-         const auto& idx = _db.get_index< IndexType, OrderType >();
-         if( direction == ascending )
-         {
-            auto itr = idx.lower_bound( start );
-            auto end = idx.end();
-
-            while( result.size() < limit && itr != end )
-            {
-               if( filter( *itr ) )
-                  result.push_back( on_push( *itr ) );
-
-               ++itr;
-            }
-         }
-         else if( direction == descending )
-         {
-            auto itr = boost::make_reverse_iterator( idx.lower_bound( start ) );
-            auto end = idx.rend();
-
-            while( result.size() < limit && itr != end )
-            {
-               if( filter( *itr ) )
-                  result.push_back( on_push( *itr ) );
-
-               ++itr;
-            }
-         }
-      }
 
       chain::database& _db;
 };
@@ -236,35 +193,38 @@ DEFINE_API_IMPL( database_api_impl, list_witnesses )
    {
       case( by_name ):
       {
-         iterate_results< chain::witness_index, chain::by_name >(
+         iterate_results(
+            _db.get_index< chain::witness_index, chain::by_name >(),
             args.start.as< protocol::account_name_type >(),
             result.witnesses,
             args.limit,
             [&]( const witness_object& w ){ return api_witness_object( w ); },
-            &database_api_impl::filter_default< witness_object > );
+            &filter_default< witness_object > );
          break;
       }
       case( by_vote_name ):
       {
          auto key = args.start.as< std::pair< share_type, account_name_type > >();
-         iterate_results< chain::witness_index, chain::by_vote_name >(
+         iterate_results(
+            _db.get_index< chain::witness_index, chain::by_vote_name >(),
             boost::make_tuple( key.first, key.second ),
             result.witnesses,
             args.limit,
             [&]( const witness_object& w ){ return api_witness_object( w ); },
-            &database_api_impl::filter_default< witness_object > );
+            &filter_default< witness_object > );
          break;
       }
       case( by_schedule_time ):
       {
          auto key = args.start.as< std::pair< fc::uint128, account_name_type > >();
          auto wit_id = _db.get< chain::witness_object, chain::by_name >( key.second ).id;
-         iterate_results< chain::witness_index, chain::by_schedule_time >(
+         iterate_results(
+            _db.get_index< chain::witness_index, chain::by_schedule_time >(),
             boost::make_tuple( key.first, wit_id ),
             result.witnesses,
             args.limit,
             [&]( const witness_object& w ){ return api_witness_object( w ); },
-            &database_api_impl::filter_default< witness_object > );
+            &filter_default< witness_object > );
          break;
       }
       default:
@@ -303,23 +263,25 @@ DEFINE_API_IMPL( database_api_impl, list_witness_votes )
       case( by_account_witness ):
       {
          auto key = args.start.as< std::pair< account_name_type, account_name_type > >();
-         iterate_results< chain::witness_vote_index, chain::by_account_witness >(
+         iterate_results(
+            _db.get_index< chain::witness_vote_index, chain::by_account_witness >(),
             boost::make_tuple( key.first, key.second ),
             result.votes,
             args.limit,
             [&]( const witness_vote_object& v ){ return api_witness_vote_object( v ); },
-            &database_api_impl::filter_default< api_witness_vote_object > );
+            &filter_default< api_witness_vote_object > );
          break;
       }
       case( by_witness_account ):
       {
          auto key = args.start.as< std::pair< account_name_type, account_name_type > >();
-         iterate_results< chain::witness_vote_index, chain::by_witness_account >(
+         iterate_results(
+            _db.get_index< chain::witness_vote_index, chain::by_witness_account >(),
             boost::make_tuple( key.first, key.second ),
             result.votes,
             args.limit,
             [&]( const witness_vote_object& v ){ return api_witness_vote_object( v ); },
-            &database_api_impl::filter_default< api_witness_vote_object > );
+            &filter_default< api_witness_vote_object > );
          break;
       }
       default:
@@ -360,34 +322,37 @@ DEFINE_API_IMPL( database_api_impl, list_accounts )
    {
       case( by_name ):
       {
-         iterate_results< chain::account_index, chain::by_name >(
+         iterate_results(
+            _db.get_index< chain::account_index, chain::by_name >(),
             args.start.as< protocol::account_name_type >(),
             result.accounts,
             args.limit,
             [&]( const account_object& a ){ return api_account_object( a, _db ); },
-            &database_api_impl::filter_default< account_object > );
+            &filter_default< account_object > );
          break;
       }
       case( by_proxy ):
       {
          auto key = args.start.as< std::pair< account_name_type, account_name_type > >();
-         iterate_results< chain::account_index, chain::by_proxy >(
+         iterate_results(
+            _db.get_index< chain::account_index, chain::by_proxy >(),
             boost::make_tuple( key.first, key.second ),
             result.accounts,
             args.limit,
             [&]( const account_object& a ){ return api_account_object( a, _db ); },
-            &database_api_impl::filter_default< account_object > );
+            &filter_default< account_object > );
          break;
       }
       case( by_next_vesting_withdrawal ):
       {
          auto key = args.start.as< std::pair< fc::time_point_sec, account_name_type > >();
-         iterate_results< chain::account_index, chain::by_next_vesting_withdrawal >(
+         iterate_results(
+            _db.get_index< chain::account_index, chain::by_next_vesting_withdrawal >(),
             boost::make_tuple( key.first, key.second ),
             result.accounts,
             args.limit,
             [&]( const account_object& a ){ return api_account_object( a, _db ); },
-            &database_api_impl::filter_default< account_object > );
+            &filter_default< account_object > );
          break;
       }
       default:
@@ -423,12 +388,13 @@ DEFINE_API_IMPL( database_api_impl, list_owner_histories )
    result.owner_auths.reserve( args.limit );
 
    auto key = args.start.as< std::pair< account_name_type, fc::time_point_sec > >();
-   iterate_results< chain::owner_authority_history_index, chain::by_account >(
+   iterate_results(
+      _db.get_index< chain::owner_authority_history_index, chain::by_account >(),
       boost::make_tuple( key.first, key.second ),
       result.owner_auths,
       args.limit,
       [&]( const owner_authority_history_object& o ){ return api_owner_authority_history_object( o ); },
-      &database_api_impl::filter_default< owner_authority_history_object > );
+      &filter_default< owner_authority_history_object > );
 
    return result;
 }
@@ -463,23 +429,25 @@ DEFINE_API_IMPL( database_api_impl, list_account_recovery_requests )
    {
       case( by_account ):
       {
-         iterate_results< chain::account_recovery_request_index, chain::by_account >(
+         iterate_results(
+            _db.get_index< chain::account_recovery_request_index, chain::by_account >(),
             args.start.as< account_name_type >(),
             result.requests,
             args.limit,
             [&]( const account_recovery_request_object& a ){ return api_account_recovery_request_object( a ); },
-            &database_api_impl::filter_default< api_account_recovery_request_object > );
+            &filter_default< api_account_recovery_request_object > );
          break;
       }
       case( by_expiration ):
       {
          auto key = args.start.as< std::pair< fc::time_point_sec, account_name_type > >();
-         iterate_results< chain::account_recovery_request_index, chain::by_expiration >(
+         iterate_results(
+            _db.get_index< chain::account_recovery_request_index, chain::by_expiration >(),
             boost::make_tuple( key.first, key.second ),
             result.requests,
             args.limit,
             [&]( const account_recovery_request_object& a ){ return api_account_recovery_request_object( a ); },
-            &database_api_impl::filter_default< api_account_recovery_request_object > );
+            &filter_default< api_account_recovery_request_object > );
          break;
       }
       default:
@@ -519,23 +487,25 @@ DEFINE_API_IMPL( database_api_impl, list_change_recovery_account_requests )
    {
       case( by_account ):
       {
-         iterate_results< chain::change_recovery_account_request_index, chain::by_account >(
+         iterate_results(
+            _db.get_index< chain::change_recovery_account_request_index, chain::by_account >(),
             args.start.as< account_name_type >(),
             result.requests,
             args.limit,
-            &database_api_impl::on_push_default< change_recovery_account_request_object >,
-            &database_api_impl::filter_default< change_recovery_account_request_object > );
+            &on_push_default< change_recovery_account_request_object >,
+            &filter_default< change_recovery_account_request_object > );
          break;
       }
       case( by_effective_date ):
       {
          auto key = args.start.as< std::pair< fc::time_point_sec, account_name_type > >();
-         iterate_results< chain::change_recovery_account_request_index, chain::by_effective_date >(
+         iterate_results(
+            _db.get_index< chain::change_recovery_account_request_index, chain::by_effective_date >(),
             boost::make_tuple( key.first, key.second ),
             result.requests,
             args.limit,
-            &database_api_impl::on_push_default< change_recovery_account_request_object >,
-            &database_api_impl::filter_default< change_recovery_account_request_object > );
+            &on_push_default< change_recovery_account_request_object >,
+            &filter_default< change_recovery_account_request_object > );
          break;
       }
       default:
@@ -576,24 +546,26 @@ DEFINE_API_IMPL( database_api_impl, list_escrows )
       case( by_from_id ):
       {
          auto key = args.start.as< std::pair< account_name_type, uint32_t > >();
-         iterate_results< chain::escrow_index, chain::by_from_id >(
+         iterate_results(
+            _db.get_index< chain::escrow_index, chain::by_from_id >(),
             boost::make_tuple( key.first, key.second ),
             result.escrows,
             args.limit,
-            &database_api_impl::on_push_default< escrow_object >,
-            &database_api_impl::filter_default< escrow_object > );
+            &on_push_default< escrow_object >,
+            &filter_default< escrow_object > );
          break;
       }
       case( by_ratification_deadline ):
       {
          auto key = args.start.as< std::vector< fc::variant > >();
          FC_ASSERT( key.size() == 3, "by_ratification_deadline start requires 3 values. (bool, time_point_sec, escrow_id_type)" );
-         iterate_results< chain::escrow_index, chain::by_ratification_deadline >(
+         iterate_results(
+            _db.get_index< chain::escrow_index, chain::by_ratification_deadline >(),
             boost::make_tuple( key[0].as< bool >(), key[1].as< fc::time_point_sec >(), key[2].as< escrow_id_type >() ),
             result.escrows,
             args.limit,
-            &database_api_impl::on_push_default< escrow_object >,
-            &database_api_impl::filter_default< escrow_object > );
+            &on_push_default< escrow_object >,
+            &filter_default< escrow_object > );
          break;
       }
       default:
@@ -634,23 +606,25 @@ DEFINE_API_IMPL( database_api_impl, list_withdraw_vesting_routes )
       case( by_withdraw_route ):
       {
          auto key = args.start.as< std::pair< account_name_type, account_name_type > >();
-         iterate_results< chain::withdraw_vesting_route_index, chain::by_withdraw_route >(
+         iterate_results(
+            _db.get_index< chain::withdraw_vesting_route_index, chain::by_withdraw_route >(),
             boost::make_tuple( key.first, key.second ),
             result.routes,
             args.limit,
-            &database_api_impl::on_push_default< withdraw_vesting_route_object >,
-            &database_api_impl::filter_default< withdraw_vesting_route_object > );
+            &on_push_default< withdraw_vesting_route_object >,
+            &filter_default< withdraw_vesting_route_object > );
          break;
       }
       case( by_destination ):
       {
          auto key = args.start.as< std::pair< account_name_type, withdraw_vesting_route_id_type > >();
-         iterate_results< chain::withdraw_vesting_route_index, chain::by_destination >(
+         iterate_results(
+            _db.get_index< chain::withdraw_vesting_route_index, chain::by_destination >(),
             boost::make_tuple( key.first, key.second ),
             result.routes,
             args.limit,
-            &database_api_impl::on_push_default< withdraw_vesting_route_object >,
-            &database_api_impl::filter_default< withdraw_vesting_route_object > );
+            &on_push_default< withdraw_vesting_route_object >,
+            &filter_default< withdraw_vesting_route_object > );
          break;
       }
       default:
@@ -714,36 +688,39 @@ DEFINE_API_IMPL( database_api_impl, list_savings_withdrawals )
       case( by_from_id ):
       {
          auto key = args.start.as< std::pair< account_name_type, uint32_t > >();
-         iterate_results< chain::savings_withdraw_index, chain::by_from_rid >(
+         iterate_results(
+            _db.get_index< chain::savings_withdraw_index, chain::by_from_rid >(),
             boost::make_tuple( key.first, key.second ),
             result.withdrawals,
             args.limit,
             [&]( const savings_withdraw_object& w ){ return api_savings_withdraw_object( w ); },
-            &database_api_impl::filter_default< savings_withdraw_object > );
+            &filter_default< savings_withdraw_object > );
          break;
       }
       case( by_complete_from_id ):
       {
          auto key = args.start.as< std::vector< fc::variant > >();
          FC_ASSERT( key.size() == 3, "by_complete_from_id start requires 3 values. (time_point_sec, account_name_type, uint32_t)" );
-         iterate_results< chain::savings_withdraw_index, chain::by_complete_from_rid >(
+         iterate_results(
+            _db.get_index< chain::savings_withdraw_index, chain::by_complete_from_rid >(),
             boost::make_tuple( key[0].as< fc::time_point_sec >(), key[1].as< account_name_type >(), key[2].as< uint32_t >() ),
             result.withdrawals,
             args.limit,
             [&]( const savings_withdraw_object& w ){ return api_savings_withdraw_object( w ); },
-            &database_api_impl::filter_default< savings_withdraw_object > );
+            &filter_default< savings_withdraw_object > );
          break;
       }
       case( by_to_complete ):
       {
          auto key = args.start.as< std::vector< fc::variant > >();
          FC_ASSERT( key.size() == 3, "by_to_complete start requires 3 values. (account_name_type, time_point_sec, savings_withdraw_id_type" );
-         iterate_results< chain::savings_withdraw_index, chain::by_to_complete >(
+         iterate_results(
+            _db.get_index< chain::savings_withdraw_index, chain::by_to_complete >(),
             boost::make_tuple( key[0].as< account_name_type >(), key[1].as< fc::time_point_sec >(), key[2].as< savings_withdraw_id_type >() ),
             result.withdrawals,
             args.limit,
             [&]( const savings_withdraw_object& w ){ return api_savings_withdraw_object( w ); },
-            &database_api_impl::filter_default< savings_withdraw_object > );
+            &filter_default< savings_withdraw_object > );
          break;
       }
       default:
@@ -783,12 +760,13 @@ DEFINE_API_IMPL( database_api_impl, list_vesting_delegations )
       case( by_delegation ):
       {
          auto key = args.start.as< std::pair< account_name_type, account_name_type > >();
-         iterate_results< chain::vesting_delegation_index, chain::by_delegation >(
+         iterate_results(
+            _db.get_index< chain::vesting_delegation_index, chain::by_delegation >(),
             boost::make_tuple( key.first, key.second ),
             result.delegations,
             args.limit,
-            &database_api_impl::on_push_default< api_vesting_delegation_object >,
-            &database_api_impl::filter_default< vesting_delegation_object > );
+            &on_push_default< api_vesting_delegation_object >,
+            &filter_default< vesting_delegation_object > );
          break;
       }
       default:
@@ -828,24 +806,26 @@ DEFINE_API_IMPL( database_api_impl, list_vesting_delegation_expirations )
       case( by_expiration ):
       {
          auto key = args.start.as< std::pair< time_point_sec, vesting_delegation_expiration_id_type > >();
-         iterate_results< chain::vesting_delegation_expiration_index, chain::by_expiration >(
+         iterate_results(
+            _db.get_index< chain::vesting_delegation_expiration_index, chain::by_expiration >(),
             boost::make_tuple( key.first, key.second ),
             result.delegations,
             args.limit,
-            &database_api_impl::on_push_default< api_vesting_delegation_expiration_object >,
-            &database_api_impl::filter_default< vesting_delegation_expiration_object > );
+            &on_push_default< api_vesting_delegation_expiration_object >,
+            &filter_default< vesting_delegation_expiration_object > );
          break;
       }
       case( by_account_expiration ):
       {
          auto key = args.start.as< std::vector< fc::variant > >();
          FC_ASSERT( key.size() == 3, "by_account_expiration start requires 3 values. (account_name_type, time_point_sec, vesting_delegation_expiration_id_type" );
-         iterate_results< chain::vesting_delegation_expiration_index, chain::by_account_expiration >(
+         iterate_results(
+            _db.get_index< chain::vesting_delegation_expiration_index, chain::by_account_expiration >(),
             boost::make_tuple( key[0].as< account_name_type >(), key[1].as< time_point_sec >(), key[2].as< vesting_delegation_expiration_id_type >() ),
             result.delegations,
             args.limit,
-            &database_api_impl::on_push_default< api_vesting_delegation_expiration_object >,
-            &database_api_impl::filter_default< vesting_delegation_expiration_object > );
+            &on_push_default< api_vesting_delegation_expiration_object >,
+            &filter_default< vesting_delegation_expiration_object > );
          break;
       }
       default:
@@ -885,23 +865,25 @@ DEFINE_API_IMPL( database_api_impl, list_sbd_conversion_requests )
       case( by_conversion_date ):
       {
          auto key = args.start.as< std::pair< time_point_sec, convert_request_id_type > >();
-         iterate_results< chain::convert_request_index, chain::by_conversion_date >(
+         iterate_results(
+            _db.get_index< chain::convert_request_index, chain::by_conversion_date >(),
             boost::make_tuple( key.first, key.second ),
             result.requests,
             args.limit,
-            &database_api_impl::on_push_default< api_convert_request_object >,
-            &database_api_impl::filter_default< convert_request_object > );
+            &on_push_default< api_convert_request_object >,
+            &filter_default< convert_request_object > );
          break;
       }
       case( by_account ):
       {
          auto key = args.start.as< std::pair< account_name_type, uint32_t > >();
-         iterate_results< chain::convert_request_index, chain::by_owner >(
+         iterate_results(
+            _db.get_index< chain::convert_request_index, chain::by_owner >(),
             boost::make_tuple( key.first, key.second ),
             result.requests,
             args.limit,
-            &database_api_impl::on_push_default< api_convert_request_object >,
-            &database_api_impl::filter_default< convert_request_object > );
+            &on_push_default< api_convert_request_object >,
+            &filter_default< convert_request_object > );
          break;
       }
       default:
@@ -940,23 +922,25 @@ DEFINE_API_IMPL( database_api_impl, list_decline_voting_rights_requests )
    {
       case( by_account ):
       {
-         iterate_results< chain::decline_voting_rights_request_index, chain::by_account >(
+         iterate_results(
+            _db.get_index< chain::decline_voting_rights_request_index, chain::by_account >(),
             args.start.as< account_name_type >(),
             result.requests,
             args.limit,
-            &database_api_impl::on_push_default< api_decline_voting_rights_request_object >,
-            &database_api_impl::filter_default< decline_voting_rights_request_object > );
+            &on_push_default< api_decline_voting_rights_request_object >,
+            &filter_default< decline_voting_rights_request_object > );
          break;
       }
       case( by_effective_date ):
       {
          auto key = args.start.as< std::pair< time_point_sec, account_name_type > >();
-         iterate_results< chain::decline_voting_rights_request_index, chain::by_effective_date >(
+         iterate_results(
+            _db.get_index< chain::decline_voting_rights_request_index, chain::by_effective_date >(),
             boost::make_tuple( key.first, key.second ),
             result.requests,
             args.limit,
-            &database_api_impl::on_push_default< api_decline_voting_rights_request_object >,
-            &database_api_impl::filter_default< decline_voting_rights_request_object > );
+            &on_push_default< api_decline_voting_rights_request_object >,
+            &filter_default< decline_voting_rights_request_object > );
          break;
       }
       default:
@@ -1016,23 +1000,25 @@ DEFINE_API_IMPL( database_api_impl, list_comments )
             comment_id = comment->id;
          }
 
-         iterate_results< chain::comment_index, chain::by_cashout_time >(
+         iterate_results(
+            _db.get_index< chain::comment_index, chain::by_cashout_time >(),
             boost::make_tuple( key[0].as< fc::time_point_sec >(), comment_id ),
             result.comments,
             args.limit,
             [&]( const comment_object& c ){ return api_comment_object( c, _db ); },
-            &database_api_impl::filter_default< comment_object > );
+            &filter_default< comment_object > );
          break;
       }
       case( by_permlink ):
       {
          auto key = args.start.as< std::pair< account_name_type, string > >();
-         iterate_results< chain::comment_index, chain::by_permlink >(
+         iterate_results(
+            _db.get_index< chain::comment_index, chain::by_permlink >(),
             boost::make_tuple( key.first, key.second ),
             result.comments,
             args.limit,
             [&]( const comment_object& c ){ return api_comment_object( c, _db ); },
-            &database_api_impl::filter_default< comment_object > );
+            &filter_default< comment_object > );
          break;
       }
       case( by_root ):
@@ -1062,12 +1048,13 @@ DEFINE_API_IMPL( database_api_impl, list_comments )
             child_id = child->id;
          }
 
-         iterate_results< chain::comment_index, chain::by_root >(
+         iterate_results(
+            _db.get_index< chain::comment_index, chain::by_root >(),
             boost::make_tuple( root_id, child_id ),
             result.comments,
             args.limit,
             [&]( const comment_object& c ){ return api_comment_object( c, _db ); },
-            &database_api_impl::filter_default< comment_object > );
+            &filter_default< comment_object > );
          break;
       }
       case( by_parent ):
@@ -1086,12 +1073,13 @@ DEFINE_API_IMPL( database_api_impl, list_comments )
             child_id = child->id;
          }
 
-         iterate_results< chain::comment_index, chain::by_parent >(
+         iterate_results(
+            _db.get_index< chain::comment_index, chain::by_parent >(),
             boost::make_tuple( key[0].as< account_name_type >(), key[1].as< string >(), child_id ),
             result.comments,
             args.limit,
             [&]( const comment_object& c ){ return api_comment_object( c, _db ); },
-            &database_api_impl::filter_default< comment_object > );
+            &filter_default< comment_object > );
          break;
       }
 #ifndef IS_LOW_MEM
@@ -1111,12 +1099,13 @@ DEFINE_API_IMPL( database_api_impl, list_comments )
             child_id = child->id;
          }
 
-         iterate_results< chain::comment_index, chain::by_last_update >(
+         iterate_results(
+            _db.get_index< chain::comment_index, chain::by_last_update >(),
             boost::make_tuple( key[0].as< account_name_type >(), key[1].as< fc::time_point_sec >(), child_id ),
             result.comments,
             args.limit,
             [&]( const comment_object& c ){ return api_comment_object( c, _db ); },
-            &database_api_impl::filter_default< comment_object > );
+            &filter_default< comment_object > );
          break;
       }
       case( by_author_last_update ):
@@ -1135,12 +1124,13 @@ DEFINE_API_IMPL( database_api_impl, list_comments )
             comment_id = comment->id;
          }
 
-         iterate_results< chain::comment_index, chain::by_last_update >(
+         iterate_results(
+            _db.get_index< chain::comment_index, chain::by_last_update >(),
             boost::make_tuple( key[0].as< account_name_type >(), key[1].as< fc::time_point_sec >(), comment_id ),
             result.comments,
             args.limit,
             [&]( const comment_object& c ){ return api_comment_object( c, _db ); },
-            &database_api_impl::filter_default< comment_object > );
+            &filter_default< comment_object > );
          break;
       }
 #endif
@@ -1175,12 +1165,12 @@ namespace last_votes_misc
 
    //====================================================votes_impl====================================================
    template< sort_order_type SORTORDERTYPE >
-   void votes_impl( database_api_impl& _impl, vector< api_comment_vote_object >& c, size_t nr_args, uint32_t limit, vector< fc::variant >& key, fc::time_point_sec& timestamp, uint64_t weight )
+   void votes_impl( database_api_impl& _impl, vector< api_comment_vote_object >& c, uint32_t limit, vector< fc::variant >& key, fc::time_point_sec& timestamp, uint64_t weight )
    {
-      if( SORTORDERTYPE == by_comment_voter )
-         FC_ASSERT( key.size() == nr_args, "by_comment_voter start requires ${nr_args} values. (account_name_type, string, account_name_type)", ("nr_args", nr_args ) );
+      if( SORTORDERTYPE == by_comment_voter_symbol )
+         FC_ASSERT( key.size() == 3 || key.size() == 4, "by_comment_voter_symbol start requires 3-4 values. (account_name_type, string, account_name_type, asset_symbol_type)" );
       else
-         FC_ASSERT( key.size() == nr_args, "by_comment_voter start requires ${nr_args} values. (account_name_type, ${desc}account_name_type, string)", ("nr_args", nr_args )("desc",( nr_args == 4 )?"time_point_sec, ":"" ) );
+         FC_ASSERT( key.size() == 3 || key.size() == 4, "by_voter_comment_symbol start requires 3-4 values. (account_name_type, account_name_type, string)" );
 
       account_name_type voter;
       account_name_type author;
@@ -1189,7 +1179,7 @@ namespace last_votes_misc
       account_id_type voter_id;
       comment_id_type comment_id;
 
-      if( SORTORDERTYPE == by_comment_voter )
+      if( SORTORDERTYPE == by_comment_voter_symbol )
       {
          author = key[0].as< account_name_type >();
          permlink = key[1].as< string >();
@@ -1197,9 +1187,9 @@ namespace last_votes_misc
       }
       else
       {
-         author = key[ nr_args - 2 ].as< account_name_type >();
-         permlink = key[ nr_args - 1 ].as< string >();
          voter = key[0].as< account_name_type >();
+         author = key[ 1 ].as< account_name_type >();
+         permlink = key[ 2 ].as< string >();
       }
 
       if( voter != account_name_type() )
@@ -1216,23 +1206,32 @@ namespace last_votes_misc
          comment_id = comment->id;
       }
 
-      if( SORTORDERTYPE == by_comment_voter )
+      asset_symbol_type start_symbol = STEEM_SYMBOL;
+
+      if( key.size() == 4 )
       {
-         _impl.iterate_results< chain::comment_vote_index, chain::by_comment_voter >(
-         boost::make_tuple( comment_id, voter_id ),
-         c,
-         limit,
-         [&]( const comment_vote_object& cv ){ return api_comment_vote_object( cv, _impl._db ); },
-         &database_api_impl::filter_default< comment_vote_object > );
+         start_symbol = key[3].as< asset_symbol_type >();
+      }
+
+      if( SORTORDERTYPE == by_comment_voter_symbol )
+      {
+         iterate_results(
+            _impl._db.get_index< chain::comment_vote_index, chain::by_comment_voter_symbol >(),
+            boost::make_tuple( comment_id, voter_id ),
+            c,
+            limit,
+            [&]( const comment_vote_object& cv ){ return api_comment_vote_object( cv, _impl._db ); },
+            &filter_default< comment_vote_object > );
       }
       else if( SORTORDERTYPE == by_voter_comment )
       {
-         _impl.iterate_results< chain::comment_vote_index, chain::by_voter_comment >(
-         boost::make_tuple( voter_id, comment_id ),
-         c,
-         limit,
-         [&]( const comment_vote_object& cv ){ return api_comment_vote_object( cv, _impl._db ); },
-         &database_api_impl::filter_default< comment_vote_object > );
+         iterate_results(
+            _impl._db.get_index< chain::comment_vote_index, chain::by_voter_comment_symbol >(),
+            boost::make_tuple( voter_id, comment_id ),
+            c,
+            limit,
+            [&]( const comment_vote_object& cv ){ return api_comment_vote_object( cv, _impl._db ); },
+            &filter_default< comment_vote_object > );
       }
    }
 
@@ -1254,15 +1253,98 @@ DEFINE_API_IMPL( database_api_impl, list_votes )
    switch( args.order )
    {
       case( by_comment_voter ):
+      case( by_comment_voter_symbol ):
       {
          static fc::time_point_sec t( -1 );
-         last_votes_misc::votes_impl< by_comment_voter >( *this, result.votes, 3/*nr_args*/, args.limit, key, t, 0 );
+         last_votes_misc::votes_impl< by_comment_voter_symbol >( *this, result.votes, args.limit, key, t, 0 );
          break;
       }
       case( by_voter_comment ):
+      case( by_voter_comment_symbol ):
       {
          static fc::time_point_sec t( -1 );
-         last_votes_misc::votes_impl< by_voter_comment >( *this, result.votes, 3/*nr_args*/, args.limit, key, t, 0 );
+         last_votes_misc::votes_impl< by_voter_comment_symbol >( *this, result.votes, args.limit, key, t, 0 );
+         break;
+      }
+      case( by_comment_symbol_voter ):
+      {
+         auto key = args.start.as< vector< fc::variant > >();
+         FC_ASSERT( key.size() == 3 || key.size() == 4, "by_comment_symbol_voter start requires 3-4 values. (account_name_type, string, asset_symbol_type, account_name_type)" );
+
+         auto author = key[0].as< account_name_type >();
+         auto permlink = key[1].as< string >();
+         comment_id_type comment_id;
+
+         if( author != account_name_type() || permlink.size() )
+         {
+            auto comment = _db.find< chain::comment_object, chain::by_permlink >( boost::make_tuple( author, permlink ) );
+            FC_ASSERT( comment != nullptr, "Could not find comment ${a}/${p}.", ("a", author)("p", permlink) );
+            comment_id = comment->id;
+         }
+
+         asset_symbol_type start_symbol = key[2].as< asset_symbol_type >();
+         account_id_type voter_id;
+
+         if( key.size() == 4 )
+         {
+            auto voter = key[3].as< account_name_type >();
+
+            if( voter != account_name_type() )
+            {
+               auto account = _db.find< chain::account_object, chain::by_name >( voter );
+               FC_ASSERT( account != nullptr, "Could not find voter ${v}.", ("v", voter ) );
+               voter_id = account->id;
+            }
+         }
+
+         iterate_results(
+            _db.get_index< chain::comment_vote_index, chain::by_comment_symbol_voter >(),
+            boost::make_tuple( comment_id, start_symbol, voter_id ),
+            result.votes,
+            args.limit,
+            [&]( const comment_vote_object& cv ){ return api_comment_vote_object( cv, _db ); },
+            &filter_default< comment_vote_object > );
+         break;
+      }
+      case( by_voter_symbol_comment ):
+      {
+         auto key = args.start.as< vector< fc::variant > >();
+         FC_ASSERT( key.size() == 2 || key.size() == 4, "by_voter_symbol_comment start requires 2 or 4 values. (account_name_type, asset_symbol_type, account_name_type, string)" );
+
+         account_id_type voter_id;
+         auto voter = key[0].as< account_name_type >();
+
+         if( voter != account_name_type() )
+         {
+            auto account = _db.find< chain::account_object, chain::by_name >( voter );
+            FC_ASSERT( account != nullptr, "Could not find voter ${v}.", ("v", voter ) );
+            voter_id = account->id;
+         }
+
+         asset_symbol_type start_symbol = key[1].as< asset_symbol_type >();
+
+         comment_id_type comment_id;
+
+         if( key.size() == 4 )
+         {
+            auto author = key[2].as< account_name_type >();
+            auto permlink = key[3].as< string >();
+
+            if( author != account_name_type() || permlink.size() )
+            {
+               auto comment = _db.find< chain::comment_object, chain::by_permlink >( boost::make_tuple( author, permlink ) );
+               FC_ASSERT( comment != nullptr, "Could not find comment ${a}/${p}.", ("a", author)("p", permlink) );
+               comment_id = comment->id;
+            }
+         }
+
+         iterate_results(
+            _db.get_index< chain::comment_vote_index, chain::by_voter_symbol_comment >(),
+            boost::make_tuple( voter_id, start_symbol, comment_id ),
+            result.votes,
+            args.limit,
+            [&]( const comment_vote_object& cv ){ return api_comment_vote_object( cv, _db ); },
+            &filter_default< comment_vote_object > );
          break;
       }
       default:
@@ -1276,10 +1358,10 @@ DEFINE_API_IMPL( database_api_impl, find_votes )
 {
    find_votes_return result;
 
-   auto comment = _db.find< chain::comment_object, chain::by_permlink >( boost::make_tuple( args.author, args.permlink ) );
+   auto comment = _db.find< chain::comment_object, chain::by_permlink >( boost::make_tuple( args.author, args.permlink, args.symbol ) );
    FC_ASSERT( comment != nullptr, "Could not find comment ${a}/${p}", ("a", args.author)("p", args.permlink ) );
 
-   const auto& vote_idx = _db.get_index< chain::comment_vote_index, chain::by_comment_voter >();
+   const auto& vote_idx = _db.get_index< chain::comment_vote_index, chain::by_comment_voter_symbol >();
    auto itr = vote_idx.lower_bound( comment->id );
 
    while( itr != vote_idx.end() && itr->comment == comment->id && result.votes.size() <= DATABASE_API_SINGLE_QUERY_LIMIT )
@@ -1312,23 +1394,25 @@ DEFINE_API_IMPL( database_api_impl, list_limit_orders )
       case( by_price ):
       {
          auto key = args.start.as< std::pair< price, limit_order_id_type > >();
-         iterate_results< chain::limit_order_index, chain::by_price >(
+         iterate_results(
+            _db.get_index< chain::limit_order_index, chain::by_price >(),
             boost::make_tuple( key.first, key.second ),
             result.orders,
             args.limit,
-            &database_api_impl::on_push_default< api_limit_order_object >,
-            &database_api_impl::filter_default< limit_order_object > );
+            &on_push_default< api_limit_order_object >,
+            &filter_default< limit_order_object > );
          break;
       }
       case( by_account ):
       {
          auto key = args.start.as< std::pair< account_name_type, uint32_t > >();
-         iterate_results< chain::limit_order_index, chain::by_account >(
+         iterate_results(
+            _db.get_index< chain::limit_order_index, chain::by_account >(),
             boost::make_tuple( key.first, key.second ),
             result.orders,
             args.limit,
-            &database_api_impl::on_push_default< api_limit_order_object >,
-            &database_api_impl::filter_default< limit_order_object > );
+            &on_push_default< api_limit_order_object >,
+            &filter_default< limit_order_object > );
          break;
       }
       default:
@@ -1355,44 +1439,54 @@ DEFINE_API_IMPL( database_api_impl, find_limit_orders )
 
 
 /* Order Book */
-
 DEFINE_API_IMPL( database_api_impl, get_order_book )
 {
    FC_ASSERT( args.limit <= DATABASE_API_SINGLE_QUERY_LIMIT );
    get_order_book_return result;
 
-   auto max_sell = price::max( SBD_SYMBOL, STEEM_SYMBOL );
-   auto max_buy = price::max( STEEM_SYMBOL, SBD_SYMBOL );
+   std::pair< asset_symbol_type, asset_symbol_type > market{ args.base, args.quote };
+
+   auto max_sell = price::max( std::get< 0 >( market ), std::get< 1 >( market ) );
+   auto max_buy  = price::max( std::get< 1 >( market ), std::get< 0 >( market ) );
 
    const auto& limit_price_idx = _db.get_index< chain::limit_order_index >().indices().get< chain::by_price >();
-   auto sell_itr = limit_price_idx.lower_bound( max_sell );
-   auto buy_itr  = limit_price_idx.lower_bound( max_buy );
-   auto end = limit_price_idx.end();
+   auto sell_itr               = limit_price_idx.lower_bound( max_sell );
+   auto buy_itr                = limit_price_idx.lower_bound( max_buy );
+   auto end                    = limit_price_idx.end();
 
-   while( sell_itr != end && sell_itr->sell_price.base.symbol == SBD_SYMBOL && result.bids.size() < args.limit )
+   while (
+      sell_itr != end &&
+      sell_itr->sell_price.base.symbol  == std::get< 0 >( market ) &&
+      sell_itr->sell_price.quote.symbol == std::get< 1 >( market ) &&
+      result.bids.size() < args.limit )
    {
       auto itr = sell_itr;
       order cur;
-      cur.order_price = itr->sell_price;
-      cur.real_price  = 0.0;
-      // cur.real_price  = (cur.order_price).to_real();
-      cur.sbd = itr->for_sale;
-      cur.steem = ( asset( itr->for_sale, SBD_SYMBOL ) * cur.order_price ).amount;
-      cur.created = itr->created;
-      result.bids.push_back( cur );
+      cur.order_price   = itr->sell_price;
+      cur.decimal_price = itr->sell_price.as_decimal();
+      cur.real_price    = itr->sell_price.as_real();
+      cur.for_sale      = itr->amount_for_sale();
+      cur.to_receive    = itr->amount_to_receive();
+      cur.created       = itr->created;
+      result.bids.push_back( std::move( cur ) );
       ++sell_itr;
    }
-   while( buy_itr != end && buy_itr->sell_price.base.symbol == STEEM_SYMBOL && result.asks.size() < args.limit )
+
+   while (
+      buy_itr != end &&
+      buy_itr->sell_price.base.symbol  == std::get< 1 >( market ) &&
+      buy_itr->sell_price.quote.symbol == std::get< 0 >( market ) &&
+      result.asks.size() < args.limit )
    {
       auto itr = buy_itr;
       order cur;
-      cur.order_price = itr->sell_price;
-      cur.real_price = 0.0;
-      // cur.real_price  = (~cur.order_price).to_real();
-      cur.steem   = itr->for_sale;
-      cur.sbd     = ( asset( itr->for_sale, STEEM_SYMBOL ) * cur.order_price ).amount;
-      cur.created = itr->created;
-      result.asks.push_back( cur );
+      cur.order_price   = itr->sell_price;
+      cur.decimal_price = itr->sell_price.as_decimal();
+      cur.real_price    = itr->sell_price.as_real();
+      cur.for_sale      = itr->amount_for_sale();
+      cur.to_receive    = itr->amount_to_receive();
+      cur.created       = itr->created;
+      result.asks.push_back( std::move( cur ) );
       ++buy_itr;
    }
 
@@ -1454,52 +1548,56 @@ DEFINE_API_IMPL( database_api_impl, list_proposals )
       case by_creator:
       {
          auto key = args.start.as< std::pair< account_name_type, api_id_type > >();
-         iterate_results< steem::chain::proposal_index, steem::chain::by_creator >(
+         iterate_results(
+            _db.get_index< steem::chain::proposal_index, steem::chain::by_creator >(),
             boost::make_tuple( key.first, key.second ),
             result.proposals,
             args.limit,
             [&]( const proposal_object& po ){ return api_proposal_object( po, current_time ); },
             [&]( const proposal_object& po ){ return filter_proposal_status( po, args.status, current_time ); },
-            args.order_direction
+            args.order_direction == ascending
          );
          break;
       }
       case by_start_date:
       {
          auto key = args.start.as< std::pair< time_point_sec, api_id_type > >();
-         iterate_results< steem::chain::proposal_index, steem::chain::by_start_date >(
+         iterate_results(
+            _db.get_index< steem::chain::proposal_index, steem::chain::by_start_date >(),
             boost::make_tuple( key.first, key.second ),
             result.proposals,
             args.limit,
             [&]( const proposal_object& po ){ return api_proposal_object( po, current_time ); },
             [&]( const proposal_object& po ){ return filter_proposal_status( po, args.status, current_time ); },
-            args.order_direction
+            args.order_direction == ascending
          );
          break;
       }
       case by_end_date:
       {
          auto key = args.start.as< std::pair< time_point_sec, api_id_type > >();
-         iterate_results< steem::chain::proposal_index, steem::chain::by_end_date >(
+         iterate_results(
+            _db.get_index< steem::chain::proposal_index, steem::chain::by_end_date >(),
             boost::make_tuple( key.first, key.second ),
             result.proposals,
             args.limit,
             [&]( const proposal_object& po ){ return api_proposal_object( po, current_time ); },
             [&]( const proposal_object& po ){ return filter_proposal_status( po, args.status, current_time ); },
-            args.order_direction
+            args.order_direction == ascending
          );
          break;
       }
       case by_total_votes:
       {
          auto key = args.start.as< std::pair< uint64_t, api_id_type > >();
-         iterate_results< steem::chain::proposal_index, steem::chain::by_total_votes >(
+         iterate_results(
+            _db.get_index< steem::chain::proposal_index, steem::chain::by_total_votes >(),
             boost::make_tuple( key.first, key.second ),
             result.proposals,
             args.limit,
             [&]( const proposal_object& po ){ return api_proposal_object( po, current_time ); },
             [&]( const proposal_object& po ){ return filter_proposal_status( po, args.status, current_time ); },
-            args.order_direction
+            args.order_direction == ascending
          );
          break;
       }
@@ -1548,7 +1646,8 @@ DEFINE_API_IMPL( database_api_impl, list_proposal_votes )
       case by_voter_proposal:
       {
          auto key = args.start.as< std::pair< account_name_type, api_id_type > >();
-         iterate_results< steem::chain::proposal_vote_index, steem::chain::by_voter_proposal >(
+         iterate_results(
+            _db.get_index< steem::chain::proposal_vote_index, steem::chain::by_voter_proposal >(),
             boost::make_tuple( key.first, key.second ),
             result.proposal_votes,
             args.limit,
@@ -1558,14 +1657,15 @@ DEFINE_API_IMPL( database_api_impl, list_proposal_votes )
                auto itr = _db.find< steem::chain::proposal_object, steem::chain::by_id >( po.proposal_id );
                return itr != nullptr && !itr->removed;
             },
-            args.order_direction
+            args.order_direction == ascending
          );
          break;
       }
       case by_proposal_voter:
       {
          auto key = args.start.as< std::pair< api_id_type, account_name_type > >();
-         iterate_results< steem::chain::proposal_vote_index, steem::chain::by_proposal_voter >(
+         iterate_results(
+            _db.get_index< steem::chain::proposal_vote_index, steem::chain::by_proposal_voter >(),
             boost::make_tuple( key.first, key.second ),
             result.proposal_votes,
             args.limit,
@@ -1575,7 +1675,7 @@ DEFINE_API_IMPL( database_api_impl, list_proposal_votes )
                auto itr = _db.find< steem::chain::proposal_object, steem::chain::by_id >( po.proposal_id );
                return itr != nullptr && !itr->removed;
             },
-            args.order_direction
+            args.order_direction == ascending
          );
          break;
       }
@@ -1648,14 +1748,29 @@ DEFINE_API_IMPL( database_api_impl, get_potential_signatures )
 
 DEFINE_API_IMPL( database_api_impl, verify_authority )
 {
-   args.trx.verify_authority(_db.get_chain_id(),
-                           [&]( string account_name ){ return authority( _db.get< chain::account_authority_object, chain::by_account >( account_name ).active  ); },
-                           [&]( string account_name ){ return authority( _db.get< chain::account_authority_object, chain::by_account >( account_name ).owner   ); },
-                           [&]( string account_name ){ return authority( _db.get< chain::account_authority_object, chain::by_account >( account_name ).posting ); },
-                           STEEM_MAX_SIG_CHECK_DEPTH,
-                           STEEM_MAX_AUTHORITY_MEMBERSHIP,
-                           STEEM_MAX_SIG_CHECK_ACCOUNTS,
-                           _db.has_hardfork( STEEM_HARDFORK_0_20__1944 ) ? fc::ecc::canonical_signature_type::bip_0062 : fc::ecc::canonical_signature_type::fc_canonical );
+   if( args.auth.valid() )
+   {
+         args.trx.verify_authority(_db.get_chain_id(),
+                              [&]( string account_name ){ return *(args.auth); },
+                              [&]( string account_name ){ return *(args.auth); },
+                              [&]( string account_name ){ return *(args.auth); },
+                              STEEM_MAX_SIG_CHECK_DEPTH,
+                              STEEM_MAX_AUTHORITY_MEMBERSHIP,
+                              STEEM_MAX_SIG_CHECK_ACCOUNTS,
+                              _db.has_hardfork( STEEM_HARDFORK_0_20__1944 ) ? fc::ecc::canonical_signature_type::bip_0062 : fc::ecc::canonical_signature_type::fc_canonical );
+   }
+   else
+   {
+         args.trx.verify_authority(_db.get_chain_id(),
+                              [&]( string account_name ){ return authority( _db.get< chain::account_authority_object, chain::by_account >( account_name ).active  ); },
+                              [&]( string account_name ){ return authority( _db.get< chain::account_authority_object, chain::by_account >( account_name ).owner   ); },
+                              [&]( string account_name ){ return authority( _db.get< chain::account_authority_object, chain::by_account >( account_name ).posting ); },
+                              STEEM_MAX_SIG_CHECK_DEPTH,
+                              STEEM_MAX_AUTHORITY_MEMBERSHIP,
+                              STEEM_MAX_SIG_CHECK_ACCOUNTS,
+                              _db.has_hardfork( STEEM_HARDFORK_0_20__1944 ) ? fc::ecc::canonical_signature_type::bip_0062 : fc::ecc::canonical_signature_type::fc_canonical );
+   }
+
    return verify_authority_return( { true } );
 }
 
@@ -1706,7 +1821,6 @@ DEFINE_API_IMPL( database_api_impl, verify_signatures )
    return result;
 }
 
-#ifdef STEEM_ENABLE_SMT
 //////////////////////////////////////////////////////////////////////
 //                                                                  //
 // SMT                                                              //
@@ -1740,12 +1854,13 @@ DEFINE_API_IMPL( database_api_impl, list_smt_contributions )
          else
             start = boost::make_tuple( key[ 0 ].as< asset_symbol_type >(), key[ 1 ].as< account_name_type >(), key[ 2 ].as< uint32_t >() );
 
-         iterate_results< chain::smt_contribution_index, chain::by_symbol_contributor >(
+         iterate_results(
+            _db.get_index< chain::smt_contribution_index, chain::by_symbol_contributor >(),
             start,
             result.contributions,
             args.limit,
-            &database_api_impl::on_push_default< chain::smt_contribution_object >,
-            &database_api_impl::filter_default< chain::smt_contribution_object > );
+            &on_push_default< chain::smt_contribution_object >,
+            &filter_default< chain::smt_contribution_object > );
          break;
       }
       case( by_symbol_id ):
@@ -1759,12 +1874,13 @@ DEFINE_API_IMPL( database_api_impl, list_smt_contributions )
          else
             start = boost::make_tuple( key[ 0 ].as< asset_symbol_type >(), key[ 1 ].as< smt_contribution_object_id_type >() );
 
-         iterate_results< chain::smt_contribution_index, chain::by_symbol_id >(
+         iterate_results(
+            _db.get_index< chain::smt_contribution_index, chain::by_symbol_id >(),
             start,
             result.contributions,
             args.limit,
-            &database_api_impl::on_push_default< chain::smt_contribution_object >,
-            &database_api_impl::filter_default< chain::smt_contribution_object > );
+            &on_push_default< chain::smt_contribution_object >,
+            &filter_default< chain::smt_contribution_object > );
          break;
       }
 #ifndef IS_LOW_MEM
@@ -1779,12 +1895,13 @@ DEFINE_API_IMPL( database_api_impl, list_smt_contributions )
          else
             start = boost::make_tuple( key[ 0 ].as< account_name_type >(), key[ 1 ].as< asset_symbol_type >(), key[ 2 ].as< uint32_t >() );
 
-         iterate_results< chain::smt_contribution_index, chain::by_contributor >(
+         iterate_results(
+            _db.get_index< chain::smt_contribution_index, chain::by_contributor >(),
             start,
             result.contributions,
             args.limit,
-            &database_api_impl::on_push_default< chain::smt_contribution_object >,
-            &database_api_impl::filter_default< chain::smt_contribution_object > );
+            &on_push_default< chain::smt_contribution_object >,
+            &filter_default< chain::smt_contribution_object > );
          break;
       }
 #endif
@@ -1829,15 +1946,16 @@ DEFINE_API_IMPL( database_api_impl, list_smt_tokens )
 
          if( args.start.get_object().size() > 0 )
          {
-            start = args.start.as< asset_symbol_type >();
+            start = asset_symbol_type::from_asset_num( args.start.as< asset_symbol_type >().get_stripped_precision_smt_num() );
          }
 
-         iterate_results< chain::smt_token_index, chain::by_symbol >(
+         iterate_results(
+            _db.get_index< chain::smt_token_index, chain::by_stripped_symbol >(),
             start,
             result.tokens,
             args.limit,
             [&]( const smt_token_object& t ) { return api_smt_token_object( t, _db ); },
-            &database_api_impl::filter_default< chain::smt_token_object > );
+            &filter_default< chain::smt_token_object > );
 
          break;
       }
@@ -1857,12 +1975,13 @@ DEFINE_API_IMPL( database_api_impl, list_smt_tokens )
             start = boost::make_tuple( key[0].as< account_name_type >(), key[1].as< asset_symbol_type >() );
          }
 
-         iterate_results< chain::smt_token_index, chain::by_control_account >(
+         iterate_results(
+            _db.get_index< chain::smt_token_index, chain::by_control_account >(),
             start,
             result.tokens,
             args.limit,
             [&]( const smt_token_object& t ) { return api_smt_token_object( t, _db ); },
-            &database_api_impl::filter_default< chain::smt_token_object > );
+            &filter_default< chain::smt_token_object > );
 
          break;
       }
@@ -1882,7 +2001,7 @@ DEFINE_API_IMPL( database_api_impl, find_smt_tokens )
 
    for( auto& symbol : args.symbols )
    {
-      const auto token = chain::util::smt::find_token( _db, symbol, args.ignore_precision );
+      const auto token = chain::util::smt::find_token( _db, symbol, symbol.decimals() == 0 );
       if( token != nullptr )
       {
          result.tokens.push_back( api_smt_token_object( *token, _db ) );
@@ -1912,12 +2031,13 @@ DEFINE_API_IMPL( database_api_impl, list_smt_token_emissions )
          else
             start = boost::make_tuple( key[ 0 ].as< asset_symbol_type >(), key[ 1 ].as< time_point_sec >() );
 
-         iterate_results< chain::smt_token_emissions_index, chain::by_symbol_time >(
+         iterate_results(
+            _db.get_index< chain::smt_token_emissions_index, chain::by_symbol_time >(),
             start,
             result.token_emissions,
             args.limit,
-            &database_api_impl::on_push_default< chain::smt_token_emissions_object >,
-            &database_api_impl::filter_default< chain::smt_token_emissions_object > );
+            &on_push_default< chain::smt_token_emissions_object >,
+            &filter_default< chain::smt_token_emissions_object > );
          break;
       }
       default:
@@ -1943,7 +2063,62 @@ DEFINE_API_IMPL( database_api_impl, find_smt_token_emissions )
    return result;
 }
 
-#endif
+DEFINE_API_IMPL( database_api_impl, find_smt_token_balances )
+{
+   FC_ASSERT( args.account_symbols.size() <= DATABASE_API_SINGLE_QUERY_LIMIT );
+   find_smt_token_balances_return result;
+   result.balances.reserve( args.account_symbols.size() );
+
+   for( auto& acc_sym : args.account_symbols )
+   {
+      if( acc_sym.second.decimals() == 0 )
+      {
+         auto itr = _db.find< account_regular_balance_object, by_name_stripped_symbol >( boost::make_tuple( acc_sym.first, acc_sym.second ) );
+         if( itr != nullptr ) result.balances.push_back( api_smt_account_balance_object( *itr, _db ) );
+      }
+      else
+      {
+         auto itr = _db.find< account_regular_balance_object, by_name_liquid_symbol >( boost::make_tuple( acc_sym.first, acc_sym.second ) );
+         if( itr != nullptr ) result.balances.push_back( api_smt_account_balance_object( *itr, _db ) );
+      }
+   }
+
+   return result;
+}
+
+DEFINE_API_IMPL( database_api_impl, list_smt_token_balances )
+{
+   FC_ASSERT( args.limit <= DATABASE_API_SINGLE_QUERY_LIMIT );
+   list_smt_token_balances_return result;
+   result.balances.reserve( args.limit );
+
+   switch( args.order )
+   {
+      case( by_account_symbol ):
+      {
+         auto key = args.start.get_array();
+         FC_ASSERT( key.size() == 2, "The parameter 'start' must consist of account_name_type and asset_symbol_type" );
+
+         boost::tuple< account_name_type, asset_symbol_type > start;
+         start = boost::make_tuple(
+            key[ 0 ].as< account_name_type >(),
+            asset_symbol_type::from_asset_num( key[ 1 ].as< asset_symbol_type >().get_stripped_precision_smt_num() ) );
+
+         iterate_results(
+            _db.get_index< chain::account_regular_balance_index, chain::by_name_stripped_symbol >(),
+            start,
+            result.balances,
+            args.limit,
+            [&]( const chain::account_regular_balance_object& b ){ return api_smt_account_balance_object( b, _db ); },
+            &filter_default< chain::account_regular_balance_object > );
+         break;
+      }
+      default:
+         FC_ASSERT( false, "Unknown or unsupported sort order" );
+   }
+
+   return result;
+}
 
 DEFINE_LOCKLESS_APIS( database_api, (get_config)(get_version) )
 
@@ -1996,7 +2171,6 @@ DEFINE_READ_APIS( database_api,
    (verify_authority)
    (verify_account_authority)
    (verify_signatures)
-#ifdef STEEM_ENABLE_SMT
    (get_nai_pool)
    (list_smt_contributions)
    (find_smt_contributions)
@@ -2004,7 +2178,8 @@ DEFINE_READ_APIS( database_api,
    (find_smt_tokens)
    (list_smt_token_emissions)
    (find_smt_token_emissions)
-#endif
+   (list_smt_token_balances)
+   (find_smt_token_balances)
 )
 
 } } } // steem::plugins::database_api

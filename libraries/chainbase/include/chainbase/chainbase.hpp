@@ -335,6 +335,12 @@ namespace chainbase {
          void dump_lb_call_counts() { _indices.dump_lb_call_counts(); }
 
          void trim_cache() { _indices.trim_cache(); }
+
+         void begin_bulk_load() { _indices.begin_bulk_load(); }
+
+         void end_bulk_load() { _indices.end_bulk_load(); }
+
+         void flush_bulk_load() { _indices.flush_bulk_load(); }
 #endif
 
          class session {
@@ -393,7 +399,6 @@ namespace chainbase {
          }
 
          const index_type& indicies()const { return _indices; }
-         int64_t revision()const { return _revision; }
 
 
          /**
@@ -576,6 +581,8 @@ namespace chainbase {
                undo();
          }
 
+         int64_t revision()const { return _revision; }
+
          void set_revision( int64_t revision )
          {
             if( _stack.size() != 0 ) BOOST_THROW_EXCEPTION( std::logic_error("cannot set revision while there is an existing undo stack") );
@@ -585,6 +592,9 @@ namespace chainbase {
             assert( _indices.revision() == _revision );
 #endif
          }
+
+         int64_t next_id()const { return _next_id._id; }
+         void set_next_id( int64_t next_id ) { _next_id = typename value_type::id_type( next_id ); }
 
       private:
          bool enabled()const { return _stack.size(); }
@@ -687,15 +697,19 @@ namespace chainbase {
 
          abstract_index( void* i ):_idx_ptr(i){}
          virtual ~abstract_index(){}
-         virtual void     set_revision( int64_t revision ) = 0;
+
          virtual unique_ptr<abstract_session> start_undo_session() = 0;
 
-         virtual int64_t revision()const = 0;
          virtual void    undo()const = 0;
          virtual void    squash()const = 0;
          virtual void    commit( int64_t revision )const = 0;
          virtual void    undo_all()const = 0;
          virtual uint32_t type_id()const  = 0;
+
+         virtual int64_t revision()const = 0;
+         virtual void    set_revision( int64_t revision ) = 0;
+         virtual int64_t next_id()const = 0;
+         virtual void    set_next_id( int64_t next_id ) = 0;
 
          virtual statistic_info get_statistics(bool onlyStaticInfo) const = 0;
          virtual size_t size() const = 0;
@@ -710,6 +724,9 @@ namespace chainbase {
          virtual void dump_lb_call_counts() = 0;
          virtual void trim_cache() = 0;
          virtual void print_stats() const = 0;
+         virtual void begin_bulk_load() = 0;
+         virtual void end_bulk_load() = 0;
+         virtual void flush_bulk_load() = 0;
 #endif
 
          void add_index_extension( std::shared_ptr< index_extension > ext )  { _extensions.push_back( ext ); }
@@ -739,13 +756,16 @@ namespace chainbase {
             return unique_ptr<abstract_session>(new session_impl<typename BaseIndex::session>( _base.start_undo_session() ) );
          }
 
-         virtual void     set_revision( int64_t revision ) override { _base.set_revision( revision ); }
-         virtual int64_t  revision()const  override { return _base.revision(); }
          virtual void     undo()const  override { _base.undo(); }
          virtual void     squash()const  override { _base.squash(); }
          virtual void     commit( int64_t revision )const  override { _base.commit(revision); }
          virtual void     undo_all() const override {_base.undo_all(); }
          virtual uint32_t type_id()const override { return BaseIndex::value_type::type_id; }
+
+         virtual int64_t  revision()const  override { return _base.revision(); }
+         virtual void     set_revision( int64_t revision ) override { _base.set_revision( revision ); }
+         virtual int64_t  next_id()const override { return _base.next_id(); }
+         virtual void     set_next_id( int64_t next_id ) override { _base.set_next_id( next_id ); }
 
          virtual statistic_info get_statistics(bool onlyStaticInfo) const override final
          {
@@ -808,6 +828,21 @@ namespace chainbase {
          virtual void print_stats() const override final
          {
             _base.indicies().print_stats();
+         }
+
+         virtual void begin_bulk_load() override final
+         {
+            _base.mutable_indices().begin_bulk_load();
+         }
+
+         virtual void end_bulk_load() override final
+         {
+            _base.mutable_indices().end_bulk_load();
+         }
+
+         virtual void flush_bulk_load() override final
+         {
+            _base.mutable_indices().flush_bulk_load();
          }
 #endif
 
@@ -1221,6 +1256,32 @@ namespace chainbase {
 
             return callback();
          }
+
+#ifdef ENABLE_MIRA
+         template< typename Lambda >
+         void bulk_load( Lambda&& callback )
+         {
+            for( auto& item : _index_list )
+            {
+               item->begin_bulk_load();
+            }
+
+            callback();
+
+            for( auto& item : _index_list )
+            {
+               item->end_bulk_load();
+            }
+         }
+
+         void flush_bulk_load()
+         {
+            for( auto& item : _index_list )
+            {
+               item->flush_bulk_load();
+            }
+         }
+#endif
 
          template< typename IndexExtensionType, typename Lambda >
          void for_each_index_extension( Lambda&& callback )const

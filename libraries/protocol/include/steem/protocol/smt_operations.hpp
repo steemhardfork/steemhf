@@ -4,17 +4,11 @@
 #include <steem/protocol/asset.hpp>
 #include <steem/protocol/misc_utilities.hpp>
 
-#ifdef STEEM_ENABLE_SMT
-
 #define SMT_MAX_UNIT_ROUTES            10
 #define SMT_MAX_UNIT_COUNT             20
 #define SMT_MAX_DECIMAL_PLACES         8
-#define SMT_MIN_HARD_CAP_STEEM_UNITS   10000
-#define SMT_MIN_SATURATION_STEEM_UNITS 1000
-#define SMT_MIN_SOFT_CAP_STEEM_UNITS   1000
 
 namespace steem { namespace protocol {
-
 
 /**
  * This operation introduces new SMT into blockchain as identified by
@@ -25,6 +19,8 @@ struct smt_create_operation : public base_operation
 {
    account_name_type control_account;
    asset_symbol_type symbol;
+
+   smt_ticker_type   desired_ticker;
 
    /// The amount to be transfered from @account to null account as elevation fee.
    asset             smt_creation_fee;
@@ -41,8 +37,8 @@ struct smt_create_operation : public base_operation
 
 struct smt_generation_unit
 {
-   flat_map< account_name_type, uint16_t >        steem_unit;
-   flat_map< account_name_type, uint16_t >        token_unit;
+   flat_map< unit_target_type, uint16_t > steem_unit;
+   flat_map< unit_target_type, uint16_t > token_unit;
 
    uint32_t steem_unit_sum()const;
    uint32_t token_unit_sum()const;
@@ -52,13 +48,7 @@ struct smt_generation_unit
 
 struct smt_capped_generation_policy
 {
-   smt_generation_unit pre_soft_cap_unit;
-   smt_generation_unit post_soft_cap_unit;
-
-   uint16_t            soft_cap_percent = 0;
-
-   uint32_t            min_unit_ratio = 0;
-   uint32_t            max_unit_ratio = 0;
+   smt_generation_unit generation_unit;
 
    extensions_type     extensions;
 
@@ -76,14 +66,14 @@ struct smt_setup_operation : public base_operation
 
    int64_t                 max_supply = STEEM_MAX_SHARE_SUPPLY;
 
-   smt_generation_policy   initial_generation_policy;
-
    time_point_sec          contribution_begin_time;
    time_point_sec          contribution_end_time;
    time_point_sec          launch_time;
 
-   share_type              steem_units_soft_cap;
-   share_type              steem_units_hard_cap;
+   share_type              steem_satoshi_min;
+
+   uint32_t                min_unit_ratio = 0;
+   uint32_t                max_unit_ratio = 0;
 
    extensions_type         extensions;
 
@@ -95,7 +85,27 @@ struct smt_setup_operation : public base_operation
 
 struct smt_emissions_unit
 {
-   flat_map< account_name_type, uint16_t >        token_unit;
+   flat_map< unit_target_type, uint16_t > token_unit;
+
+   void validate()const;
+   uint32_t token_unit_sum()const;
+};
+
+struct smt_setup_ico_tier_operation : public base_operation
+{
+   account_name_type     control_account;
+   asset_symbol_type     symbol;
+
+   share_type            steem_satoshi_cap;
+   smt_generation_policy generation_policy;
+   bool                  remove = false;
+
+   extensions_type       extensions;
+
+   void validate()const;
+
+   void get_required_active_authorities( flat_set<account_name_type>& a )const
+   { a.insert( control_account ); }
 };
 
 struct smt_setup_emissions_operation : public base_operation
@@ -107,18 +117,19 @@ struct smt_setup_emissions_operation : public base_operation
    smt_emissions_unit  emissions_unit;
 
    uint32_t            interval_seconds = 0;
-   uint32_t            interval_count = 0;
+   uint32_t            emission_count = 0;
 
    time_point_sec      lep_time;
    time_point_sec      rep_time;
 
-   asset               lep_abs_amount;
-   asset               rep_abs_amount;
+   share_type          lep_abs_amount;
+   share_type          rep_abs_amount;
    uint32_t            lep_rel_amount_numerator = 0;
    uint32_t            rep_rel_amount_numerator = 0;
 
    uint8_t             rel_amount_denom_bits = 0;
    bool                remove = false;
+   bool                floor_emissions = false;
 
    extensions_type     extensions;
 
@@ -214,7 +225,9 @@ FC_REFLECT(
    steem::protocol::smt_create_operation,
    (control_account)
    (symbol)
+   (desired_ticker)
    (smt_creation_fee)
+   (precision)
    (extensions)
 )
 
@@ -223,12 +236,12 @@ FC_REFLECT(
    (control_account)
    (symbol)
    (max_supply)
-   (initial_generation_policy)
    (contribution_begin_time)
    (contribution_end_time)
    (launch_time)
-   (steem_units_soft_cap)
-   (steem_units_hard_cap)
+   (steem_satoshi_min)
+   (min_unit_ratio)
+   (max_unit_ratio)
    (extensions)
    )
 
@@ -241,11 +254,7 @@ FC_REFLECT(
 
 FC_REFLECT(
    steem::protocol::smt_capped_generation_policy,
-   (pre_soft_cap_unit)
-   (post_soft_cap_unit)
-   (soft_cap_percent)
-   (min_unit_ratio)
-   (max_unit_ratio)
+   (generation_unit)
    (extensions)
    )
 
@@ -255,13 +264,23 @@ FC_REFLECT(
    )
 
 FC_REFLECT(
+   steem::protocol::smt_setup_ico_tier_operation,
+   (control_account)
+   (symbol)
+   (steem_satoshi_cap)
+   (generation_policy)
+   (remove)
+   (extensions)
+   )
+
+FC_REFLECT(
    steem::protocol::smt_setup_emissions_operation,
    (control_account)
    (symbol)
    (schedule_time)
    (emissions_unit)
    (interval_seconds)
-   (interval_count)
+   (emission_count)
    (lep_time)
    (rep_time)
    (lep_abs_amount)
@@ -270,6 +289,7 @@ FC_REFLECT(
    (rep_rel_amount_numerator)
    (rel_amount_denom_bits)
    (remove)
+   (floor_emissions)
    (extensions)
    )
 
@@ -333,5 +353,3 @@ FC_REFLECT(
    (contribution)
    (extensions)
    )
-
-#endif

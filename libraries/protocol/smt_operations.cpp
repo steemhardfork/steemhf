@@ -1,33 +1,36 @@
 
 #include <steem/protocol/smt_operations.hpp>
 #include <steem/protocol/validation.hpp>
-#ifdef STEEM_ENABLE_SMT
-
-#define SMT_DESTINATION_FROM          account_name_type( "$from" )
-#define SMT_DESTINATION_FROM_VESTING  account_name_type( "$from.vesting" )
-#define SMT_DESTINATION_MARKET_MAKER  account_name_type( "$market_maker" )
-#define SMT_DESTINATION_REWARDS       account_name_type( "$rewards" )
-#define SMT_DESTINATION_VESTING       account_name_type( "$vesting" )
+#include <steem/protocol/smt_util.hpp>
 
 namespace steem { namespace protocol {
-
-void common_symbol_validation( const asset_symbol_type& symbol )
-{
-   symbol.validate();
-   FC_ASSERT( symbol.space() == asset_symbol_type::smt_nai_space, "legacy symbol used instead of NAI" );
-   FC_ASSERT( symbol.is_vesting() == false, "liquid variant of NAI expected");
-}
 
 template < class Operation >
 void smt_admin_operation_validate( const Operation& o )
 {
    validate_account_name( o.control_account );
-   common_symbol_validation( o.symbol );
+   validate_smt_symbol( o.symbol );
 }
 
 void smt_create_operation::validate()const
 {
    smt_admin_operation_validate( *this );
+
+   if( desired_ticker != smt_ticker_type() )
+   {
+      FC_ASSERT( desired_ticker != STEEM_SYMBOL_STR, "SMT Ticker Symbol cannot be ${s}", ("s", STEEM_SYMBOL_STR) );
+      FC_ASSERT( desired_ticker != SBD_SYMBOL_STR, "SMT Ticker Symbol cannot be ${s}", ("s", SBD_SYMBOL_STR) );
+      FC_ASSERT( desired_ticker != VESTS_SYMBOL_STR, "SMT Ticker Symbol cannot be ${s}", ("s", VESTS_SYMBOL_STR) );
+
+      fc::string ticker_str = desired_ticker;
+
+      FC_ASSERT( ticker_str.length() >= 3, "SMT Ticker Symbol must be at least 3 characters long." );
+      for( size_t i = 0; i < ticker_str.length(); i++ )
+      {
+         FC_ASSERT( ticker_str[i] >= 'A' && ticker_str[i] <= 'Z', "SMT Ticker Symbol can only contain capital letters." );
+      }
+   }
+
    FC_ASSERT( smt_creation_fee.amount >= 0, "fee cannot be negative" );
    FC_ASSERT( smt_creation_fee.amount <= STEEM_MAX_SHARE_SUPPLY, "Fee must be smaller than STEEM_MAX_SHARE_SUPPLY" );
    FC_ASSERT( is_asset_type( smt_creation_fee, STEEM_SYMBOL ) || is_asset_type( smt_creation_fee, SBD_SYMBOL ), "Fee must be STEEM or SBD" );
@@ -35,26 +38,45 @@ void smt_create_operation::validate()const
       ("prec1",symbol.decimals())("prec2",precision) );
 }
 
-bool is_valid_unit_target( const account_name_type& name )
+bool is_valid_unit_target( const unit_target_type& unit_target )
 {
-   if( is_valid_account_name(name) )
+   if ( is_valid_account_name( unit_target ) )
       return true;
-   if( name == account_name_type("$from") )
+   if ( smt::unit_target::is_contributor( unit_target ) )
       return true;
-   if( name == account_name_type("$from.vesting") )
+   if ( smt::unit_target::is_market_maker( unit_target ) )
+      return true;
+   if ( smt::unit_target::is_rewards( unit_target ) )
+      return true;
+   if ( smt::unit_target::is_vesting( unit_target ) )
+      return true;
+   if ( smt::unit_target::is_founder_vesting( unit_target ) )
       return true;
    return false;
 }
 
-bool is_valid_smt_emissions_unit_destination( const account_name_type& name )
+bool is_valid_smt_ico_steem_destination( const unit_target_type& unit_target )
 {
-   if ( is_valid_account_name( name ) )
+   if ( is_valid_account_name( unit_target ) )
       return true;
-   if ( name == SMT_DESTINATION_REWARDS )
+   if ( smt::unit_target::is_market_maker( unit_target ) )
       return true;
-   if ( name == SMT_DESTINATION_VESTING )
+   if ( smt::unit_target::is_founder_vesting( unit_target ) )
       return true;
-   if ( name == SMT_DESTINATION_MARKET_MAKER )
+   return false;
+}
+
+bool is_valid_smt_ico_token_destination( const unit_target_type& unit_target )
+{
+   if ( is_valid_account_name( unit_target ) )
+      return true;
+   if ( smt::unit_target::is_contributor( unit_target ) )
+      return true;
+   if ( smt::unit_target::is_rewards( unit_target ) )
+      return true;
+   if ( smt::unit_target::is_market_maker( unit_target ) )
+      return true;
+   if ( smt::unit_target::is_founder_vesting( unit_target ) )
       return true;
    return false;
 }
@@ -62,7 +84,7 @@ bool is_valid_smt_emissions_unit_destination( const account_name_type& name )
 uint32_t smt_generation_unit::steem_unit_sum()const
 {
    uint32_t result = 0;
-   for(const std::pair< account_name_type, uint16_t >& e : steem_unit )
+   for(const std::pair< unit_target_type, uint16_t >& e : steem_unit )
       result += e.second;
    return result;
 }
@@ -70,7 +92,7 @@ uint32_t smt_generation_unit::steem_unit_sum()const
 uint32_t smt_generation_unit::token_unit_sum()const
 {
    uint32_t result = 0;
-   for(const std::pair< account_name_type, uint16_t >& e : token_unit )
+   for(const std::pair< unit_target_type, uint16_t >& e : token_unit )
       result += e.second;
    return result;
 }
@@ -78,46 +100,54 @@ uint32_t smt_generation_unit::token_unit_sum()const
 void smt_generation_unit::validate()const
 {
    FC_ASSERT( steem_unit.size() <= SMT_MAX_UNIT_ROUTES );
-   for(const std::pair< account_name_type, uint16_t >& e : steem_unit )
+   for(const std::pair< unit_target_type, uint16_t >& e : steem_unit )
    {
       FC_ASSERT( is_valid_unit_target( e.first ) );
       FC_ASSERT( e.second > 0 );
    }
    FC_ASSERT( token_unit.size() <= SMT_MAX_UNIT_ROUTES );
-   for(const std::pair< account_name_type, uint16_t >& e : token_unit )
+   for(const std::pair< unit_target_type, uint16_t >& e : token_unit )
    {
       FC_ASSERT( is_valid_unit_target( e.first ) );
       FC_ASSERT( e.second > 0 );
    }
 }
 
+void smt_emissions_unit::validate() const
+{
+   FC_ASSERT( token_unit.empty() == false, "Emissions token unit cannot be empty" );
+   for ( const auto& e : token_unit )
+   {
+      FC_ASSERT( smt::unit_target::is_valid_emissions_destination( e.first ),
+         "Emissions token unit destination ${n} is invalid", ("n", e.first) );
+      FC_ASSERT( e.second > 0, "Emissions token unit must be greater than 0" );
+   }
+}
+
+uint32_t smt_emissions_unit::token_unit_sum() const
+{
+   uint32_t result = 0;
+   for( const std::pair< unit_target_type, uint16_t >& e : token_unit )
+      result += e.second;
+   return result;
+}
+
 void smt_capped_generation_policy::validate()const
 {
-   pre_soft_cap_unit.validate();
-   post_soft_cap_unit.validate();
+   generation_unit.validate();
 
-   FC_ASSERT( soft_cap_percent > 0 );
-   FC_ASSERT( soft_cap_percent <= STEEM_100_PERCENT );
+   FC_ASSERT( generation_unit.steem_unit.size() > 0 );
+   FC_ASSERT( generation_unit.token_unit.size() >= 0 );
+   FC_ASSERT( generation_unit.steem_unit.size() <= SMT_MAX_UNIT_COUNT );
+   FC_ASSERT( generation_unit.token_unit.size() <= SMT_MAX_UNIT_COUNT );
 
-   FC_ASSERT( pre_soft_cap_unit.steem_unit.size() > 0 );
-   FC_ASSERT( pre_soft_cap_unit.token_unit.size() > 0 );
+   for ( auto& unit : generation_unit.steem_unit )
+      FC_ASSERT( is_valid_smt_ico_steem_destination( unit.first ),
+         "${unit_target} is not a valid STEEM unit target.", ("unit_target", unit.first) );
 
-   FC_ASSERT( pre_soft_cap_unit.steem_unit.size() <= SMT_MAX_UNIT_COUNT );
-   FC_ASSERT( pre_soft_cap_unit.token_unit.size() <= SMT_MAX_UNIT_COUNT );
-   FC_ASSERT( post_soft_cap_unit.steem_unit.size() <= SMT_MAX_UNIT_COUNT );
-   FC_ASSERT( post_soft_cap_unit.token_unit.size() <= SMT_MAX_UNIT_COUNT );
-
-   // TODO : Check account name
-
-   if( soft_cap_percent == STEEM_100_PERCENT )
-   {
-      FC_ASSERT( post_soft_cap_unit.steem_unit.size() == 0 );
-      FC_ASSERT( post_soft_cap_unit.token_unit.size() == 0 );
-   }
-   else
-   {
-      FC_ASSERT( post_soft_cap_unit.steem_unit.size() > 0 );
-   }
+   for ( auto& unit : generation_unit.token_unit )
+      FC_ASSERT( is_valid_smt_ico_token_destination( unit.first ),
+         "${unit_target} is not a valid token unit target.", ("unit_target", unit.first) );
 }
 
 struct validate_visitor
@@ -131,24 +161,28 @@ struct validate_visitor
    }
 };
 
+void smt_setup_ico_tier_operation::validate()const
+{
+   smt_admin_operation_validate( *this );
+
+   FC_ASSERT( steem_satoshi_cap >= 0, "Steem satoshi cap must be greater than or equal to 0" );
+   FC_ASSERT( steem_satoshi_cap <= STEEM_MAX_SHARE_SUPPLY, "Steem satoshi cap must be less than or equal to ${n}", ("n", STEEM_MAX_SHARE_SUPPLY) );
+
+   validate_visitor vtor;
+   generation_policy.visit( vtor );
+}
+
 void smt_setup_emissions_operation::validate()const
 {
    smt_admin_operation_validate( *this );
 
    FC_ASSERT( schedule_time > STEEM_GENESIS_TIME );
-   FC_ASSERT( emissions_unit.token_unit.empty() == false, "Emissions token unit cannot be empty" );
-
-   for ( const auto& e : emissions_unit.token_unit )
-   {
-      FC_ASSERT( is_valid_smt_emissions_unit_destination( e.first ),
-         "Emissions token unit destination ${n} is invalid", ("n", e.first) );
-      FC_ASSERT( e.second > 0, "Emissions token unit must be greater than 0" );
-   }
+   emissions_unit.validate();
 
    FC_ASSERT( interval_seconds >= SMT_EMISSION_MIN_INTERVAL_SECONDS,
       "Interval seconds must be greater than or equal to ${seconds}", ("seconds", SMT_EMISSION_MIN_INTERVAL_SECONDS) );
 
-   FC_ASSERT( interval_count > 0, "Interval count must be greater than 0" );
+   FC_ASSERT( emission_count > 0, "Emission count must be greater than 0" );
 
    FC_ASSERT( lep_time <= rep_time, "Left endpoint time must be less than or equal to right endpoint time" );
 
@@ -158,23 +192,21 @@ void smt_setup_emissions_operation::validate()const
       FC_ASSERT( lep_time >= schedule_time, "Left endpoint time cannot be before the schedule time" );
 
       // If we don't emit indefinitely
-      if ( interval_count != SMT_EMIT_INDEFINITELY )
+      if ( emission_count != SMT_EMIT_INDEFINITELY )
       {
          FC_ASSERT(
-            uint64_t( interval_seconds ) * uint64_t( interval_count ) + uint64_t( schedule_time.sec_since_epoch() ) <= std::numeric_limits< int32_t >::max(),
+            uint64_t( interval_seconds ) * ( emission_count - 1 ) + uint64_t( schedule_time.sec_since_epoch() ) <= std::numeric_limits< int32_t >::max(),
             "Schedule end time overflow" );
-         FC_ASSERT( rep_time <= schedule_time + fc::seconds( uint64_t( interval_seconds ) * uint64_t( interval_count ) ),
+         FC_ASSERT( rep_time <= schedule_time + fc::seconds( uint64_t( interval_seconds ) * ( emission_count - 1 ) ),
             "Right endpoint time cannot be after the schedule end time" );
       }
    }
 
    FC_ASSERT( symbol.is_vesting() == false, "Use liquid variant of SMT symbol to specify emission amounts" );
-   FC_ASSERT( symbol == lep_abs_amount.symbol, "Left endpoint symbol mismatch" );
-   FC_ASSERT( symbol == rep_abs_amount.symbol, "Right endpoint symbol mismatch" );
-   FC_ASSERT( lep_abs_amount.amount >= 0, "Left endpoint cannot have negative emission" );
-   FC_ASSERT( rep_abs_amount.amount >= 0, "Right endpoint cannot have negative emission" );
+   FC_ASSERT( lep_abs_amount >= 0, "Left endpoint cannot have negative emission" );
+   FC_ASSERT( rep_abs_amount >= 0, "Right endpoint cannot have negative emission" );
 
-   FC_ASSERT( lep_abs_amount.amount > 0 || lep_rel_amount_numerator > 0 || rep_abs_amount.amount > 0 || rep_rel_amount_numerator > 0,
+   FC_ASSERT( lep_abs_amount > 0 || lep_rel_amount_numerator > 0 || rep_abs_amount > 0 || rep_rel_amount_numerator > 0,
       "An emission operation must have positive non-zero emission" );
 
    // rel_amount_denom_bits <- any value of unsigned int is OK
@@ -187,15 +219,9 @@ void smt_setup_operation::validate()const
    FC_ASSERT( max_supply > 0, "Max supply must be greater than 0" );
    FC_ASSERT( max_supply <= STEEM_MAX_SHARE_SUPPLY, "Max supply must be less than ${n}", ("n", STEEM_MAX_SHARE_SUPPLY) );
    FC_ASSERT( contribution_begin_time > STEEM_GENESIS_TIME, "Contribution begin time must be greater than ${t}", ("t", STEEM_GENESIS_TIME) );
-   FC_ASSERT( contribution_end_time > contribution_begin_time, "Contribution end time must be after contribution begin time" );
-   FC_ASSERT( launch_time >= contribution_end_time, "SMT ICO launch time must be after the contribution end time" );
-   FC_ASSERT( steem_units_soft_cap <= steem_units_hard_cap, "Steem units soft cap must less than or equal to steem units hard cap" );
-   FC_ASSERT( steem_units_soft_cap >= SMT_MIN_SOFT_CAP_STEEM_UNITS, "Steem units soft cap must be greater than or equal to ${n}", ("n", SMT_MIN_SOFT_CAP_STEEM_UNITS) );
-   FC_ASSERT( steem_units_hard_cap >= SMT_MIN_HARD_CAP_STEEM_UNITS, "Steem units hard cap must be greater than or equal to ${n}", ("n", SMT_MIN_HARD_CAP_STEEM_UNITS) );
-   FC_ASSERT( steem_units_hard_cap <= STEEM_MAX_SHARE_SUPPLY, "Steem units hard cap must be less than or equal to ${n}", ("n", STEEM_MAX_SHARE_SUPPLY) );
-
-   validate_visitor vtor;
-   initial_generation_policy.visit( vtor );
+   FC_ASSERT( contribution_end_time >= contribution_begin_time, "Contribution end time must be equal to or later than contribution begin time" );
+   FC_ASSERT( launch_time >= contribution_end_time, "Launch time must be equal to or later than the contribution end time" );
+   FC_ASSERT( steem_satoshi_min >= 0, "Steem satoshi minimum must be greater than or equal to 0" );
 }
 
 struct smt_set_runtime_parameters_operation_visitor
@@ -254,21 +280,28 @@ struct smt_set_runtime_parameters_operation_visitor
 
       switch( param_rewards.author_reward_curve )
       {
-         case linear:
          case quadratic:
+         case linear:
+         case square_root:
+         case convergent_linear:
+         case convergent_square_root:
+         case bounded:
             break;
          default:
-            FC_ASSERT( false, "Author Reward Curve must be linear or quadratic" );
+            FC_ASSERT( false, "Author Reward Curve must be quadratic, linear, square_root, convergent_linear, convergent_square_root or bounded." );
       }
 
       switch( param_rewards.curation_reward_curve )
       {
+         case quadratic:
          case linear:
          case square_root:
-         case bounded_curation:
+         case convergent_linear:
+         case convergent_square_root:
+         case bounded:
             break;
          default:
-            FC_ASSERT( false, "Curation Reward Curve must be linear, square_root, or bounded_curation." );
+            FC_ASSERT( false, "Curation Reward Curve must be quadratic, linear, square_root, convergent_linear, convergent_square_root or bounded." );
       }
    }
 
@@ -297,10 +330,9 @@ void smt_set_setup_parameters_operation::validate() const
 void smt_contribute_operation::validate() const
 {
    validate_account_name( contributor );
-   common_symbol_validation( symbol );
+   validate_smt_symbol( symbol );
    FC_ASSERT( contribution.symbol == STEEM_SYMBOL, "Contributions must be made in STEEM" );
    FC_ASSERT( contribution.amount > 0, "Contribution amount must be greater than 0" );
 }
 
 } }
-#endif

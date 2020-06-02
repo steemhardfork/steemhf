@@ -9,6 +9,7 @@
 #include <fc/macros.hpp>
 #include <fc/real128.hpp>
 #include <fc/crypto/base58.hpp>
+#include <fc/rpc/cli.hpp>
 #include <fc/api.hpp>
 
 namespace steem { namespace wallet {
@@ -83,7 +84,7 @@ class wallet_api_impl;
 class wallet_api
 {
    public:
-      wallet_api( const wallet_data& initial_data, const steem::protocol::chain_id_type& _steem_chain_id, fc::api< remote_node_api > rapi );
+      wallet_api( const wallet_data& initial_data, const steem::protocol::chain_id_type& _steem_chain_id, fc::api< remote_node_api > rapi, std::shared_ptr<fc::rpc::cli> _cli );
       virtual ~wallet_api();
 
       bool copy_wallet_file( string destination_filename );
@@ -181,6 +182,14 @@ class wallet_api
        */
       condenser_api::api_account_object get_account( string account_name ) const;
 
+      /** Returns account balance for an SMT.
+       *
+       * @param account_name the name of the account to provide balance information
+       * @param nai the Numerical Asset Identifier of the SMT
+       * @return the SMT balance for the account
+       */
+      database_api::api_smt_account_balance_object get_smt_balance( string account_name, string nai ) const;
+
       /** Returns the current wallet filename.
        *
        * This is the filename that will be used when automatically saving the wallet.
@@ -247,6 +256,11 @@ class wallet_api
        * @ingroup Wallet Management
        */
       void    set_password(string password);
+
+      /** Locks the wallet (if unlocked) and exits.
+       * @ingroup Wallet Management
+       */
+      void    exit();
 
       /** Dumps all private keys owned by the wallet.
        *
@@ -719,7 +733,7 @@ class wallet_api
       );
 
       /**
-       * Release funds help in escrow
+       * Release funds held in escrow
        *
        * @param from The account that funded the escrow
        * @param to The account the funds are originally going to
@@ -864,6 +878,27 @@ class wallet_api
       condenser_api::legacy_signed_transaction sign_transaction(
          condenser_api::legacy_signed_transaction tx,
          bool broadcast = false);
+
+      /** Signs a transaction with a specific key.
+       *
+       * Given a fully-formed transaction, this adds a signature to the transaction for
+       * the given key. The specified key must be imported in to the wallet.
+       *
+       * @param tx the formed transaction
+       * @param key the public key to sign with
+       * @param broadcast true if you wish to broadcast the transaction
+       * @return the transaction with the additional signature
+       */
+      condenser_api::legacy_signed_transaction sign_transaction_with_key(
+         condenser_api::legacy_signed_transaction tx,
+         public_key_type key,
+         bool broadcast = false);
+
+      /** Broadcasts a transaction
+       * @param tx the signed transaction
+       * @return the transaction annotated with included block and tx num
+       */
+      annotated_signed_transaction broadcast_transaction( condenser_api::legacy_signed_transaction tx );
 
       /** Returns an uninitialized object representing a given blockchain operation.
        *
@@ -1036,13 +1071,6 @@ class wallet_api
        */
       condenser_api::legacy_signed_transaction follow( string follower, string following, set<string> what, bool broadcast );
 
-
-      std::map<string,std::function<string(fc::variant,const fc::variants&)>> get_result_formatters() const;
-
-      fc::signal<void(bool)> lock_changed;
-      std::shared_ptr<detail::wallet_api_impl> my;
-      void encrypt_keys();
-
       /**
        * Checks memos against private keys on account and imported in wallet
        */
@@ -1137,6 +1165,160 @@ class wallet_api
       condenser_api::legacy_signed_transaction remove_proposal( account_name_type deleter,
                                                                 flat_set< int64_t > ids,
                                                                 bool broadcast );
+
+      /**
+       *  Create a Smart Media Token.
+       *
+       *  @param control_account The name of the controlling account
+       *  @param symbol The asset symbol of the created token
+       *  @param smt_creation_fee The fee paid to create a token
+       *  @param precision The number of decimal places a token uses
+       *  @param broadcast To broadcast this transaction or not
+       */
+      condenser_api::legacy_signed_transaction create_smt(
+         account_name_type control_account,
+         asset_symbol_type symbol,
+         asset smt_creation_fee,
+         uint8_t precision,
+         bool broadcast );
+
+      /**
+       *  Creates Smart Media Token setup parameters.
+       *
+       *  @param control_account The name of the controlling account
+       *  @param symbol The asset symbol of the created token
+       *  @param json_setup_parameters A JSON representation of smt_setup_parameters
+       *  @param broadcast To broadcast this transaction or not
+       */
+      condenser_api::legacy_signed_transaction smt_set_setup_parameters(
+         account_name_type control_account,
+         asset_symbol_type symbol,
+         string json_setup_parameters,
+         bool broadcast );
+
+      /**
+       *  Creates Smart Media Token runtime parameters.
+       *
+       *  @param control_account The name of the controlling account
+       *  @param symbol The asset symbol of the created token
+       *  @param json_runtime_parameters A JSON representation of smt_runtime_parameters
+       *  @param broadcast To broadcast this transaction or not
+       */
+      condenser_api::legacy_signed_transaction smt_set_runtime_parameters(
+         account_name_type control_account,
+         asset_symbol_type symbol,
+         string json_runtime_parameters,
+         bool broadcast );
+
+      /**
+       *  Create Smart Media Token emissions.
+       *
+       *  @param control_account The name of the controlling account
+       *  @param symbol The asset symbol of the created token
+       *  @param schedule_time The time the token is applicable
+       *  @param json_emission_unit A JSON representation of an emission unit
+       *  @param interval_seconds The seconds between intervals
+       *  @param emission_count The number of emissions
+       *  @param lep_time The time of the left endpoint
+       *  @param rep_time The time of the right endpoint
+       *  @param lep_abs_amount The absolute emission amount of the left endpoint
+       *  @param rep_abs_amount The absolute emission amount of the right endpoint
+       *  @param lep_rel_amount_numerator The relative emission numerator of the left endpoint
+       *  @param rep_rel_amount_numerator The relative emission numerator of the right endpoint
+       *  @param rel_amount_denom_bits The about of bits to shift for the relative denominator
+       *  @param remove Indicates whether an emission should be added or removed
+       *  @param floor_emissions Indicates whether we should consider the lowest or highest value with regards to relative and absolute emissions
+       *  @param broadcast To broadcast this transaction or not
+       */
+      condenser_api::legacy_signed_transaction smt_setup_emissions(
+         account_name_type control_account,
+         asset_symbol_type symbol,
+         time_point_sec schedule_time,
+         string json_emission_unit,
+         uint32_t interval_seconds,
+         uint32_t emission_count,
+         time_point_sec lep_time,
+         time_point_sec rep_time,
+         share_type lep_abs_amount,
+         share_type rep_abs_amount,
+         uint32_t lep_rel_amount_numerator,
+         uint32_t rep_rel_amount_numerator,
+         uint8_t rel_amount_denom_bits,
+         bool remove,
+         bool floor_emissions,
+         bool broadcast );
+
+      /**
+       *  Setup a Smart Media Token.
+       *
+       *  @param control_account The name of the controlling account
+       *  @param symbol The asset symbol of the created token
+       *  @param max_supply The maximum supply of a smart media token
+       *  @param contribution_begin_time The start time of the ICO contribution process
+       *  @param contribution_end_time The end time of the ICO contribution process
+       *  @param launch_time The time in which a token should launch
+       *  @param steem_satoshi_min The minimum steem satoshis required for a successful ICO
+       *  @param min_unit_ratio The minimum token unit ratio
+       *  @param max_unit_ratio The maximum token unit ratio
+       *  @param broadcast To broadcast this transaction or not
+       */
+      condenser_api::legacy_signed_transaction smt_setup(
+         account_name_type control_account,
+         asset_symbol_type symbol,
+         int64_t max_supply,
+         time_point_sec contribution_begin_time,
+         time_point_sec contribution_end_time,
+         time_point_sec launch_time,
+         share_type steem_satoshi_min,
+         uint32_t min_unit_ratio,
+         uint32_t max_unit_ratio,
+         bool broadcast );
+
+      /**
+       * Setup an ICO tier.
+       *
+       *  @param control_account The name of the controlling account
+       *  @param symbol The asset symbol of the created token
+       *  @param steem_satoshi_cap The maximum amount of STEEM this ICO tier applies to
+       *  @param json_generation_policy The steem and token destination routes of the ICO process
+       *  @param broadcast To broadcast this transaction or not
+       */
+      condenser_api::legacy_signed_transaction smt_setup_ico_tier(
+         account_name_type control_account,
+         asset_symbol_type symbol,
+         share_type steem_satoshi_cap,
+         string json_generation_policy,
+         bool broadcast );
+
+      /**
+       *  Contribute to a token ICO.
+       *
+       *  @param contributor The name of the contributor
+       *  @param symbol The asset symbol of the created token
+       *  @param contribution_id A unique contribution ID number
+       *  @param contribution The contribution
+       *  @param broadcast To broadcast this transaction or not
+       */
+      condenser_api::legacy_signed_transaction smt_contribute(
+         account_name_type contributor,
+         asset_symbol_type symbol,
+         uint32_t contribution_id,
+         asset contribution,
+         bool broadcast );
+
+      /**
+       * Retrieve the current NAI pool.
+       */
+      vector< asset_symbol_type > get_nai_pool();
+
+      std::map<string,std::function<string(fc::variant,const fc::variants&)>> get_result_formatters() const;
+      fc::signal<void(bool)> lock_changed;
+
+private:
+      std::shared_ptr<detail::wallet_api_impl> my;
+      std::shared_ptr<fc::rpc::cli> cli;
+
+      void encrypt_keys();
 };
 
 struct plain_keys {
@@ -1162,7 +1344,7 @@ FC_REFLECT_ENUM( steem::wallet::authority_type, (owner)(active)(posting) )
 FC_API( steem::wallet::wallet_api,
         /// wallet api
         (help)(gethelp)
-        (about)(is_new)(is_locked)(lock)(unlock)(set_password)
+        (about)(is_new)(is_locked)(lock)(unlock)(set_password)(exit)
         (load_wallet_file)(save_wallet_file)
 
         /// key api
@@ -1180,6 +1362,7 @@ FC_API( steem::wallet::wallet_api,
         (list_witnesses)
         (get_witness)
         (get_account)
+        (get_smt_balance)
         (get_block)
         (get_ops_in_block)
         (get_feed_history)
@@ -1237,6 +1420,8 @@ FC_API( steem::wallet::wallet_api,
         (get_prototype_operation)
         (serialize_transaction)
         (sign_transaction)
+        (sign_transaction_with_key)
+        (broadcast_transaction)
 
         (get_active_witnesses)
         (get_transaction)
@@ -1248,6 +1433,15 @@ FC_API( steem::wallet::wallet_api,
         (find_proposals)
         (list_proposal_votes)
         (remove_proposal)
+
+        ///smt api
+        (create_smt)
+        (smt_set_setup_parameters)
+        (smt_set_runtime_parameters)
+        (smt_setup_emissions)
+        (smt_setup)
+        (smt_contribute)
+        (get_nai_pool)
       )
 
 FC_REFLECT( steem::wallet::memo_data, (from)(to)(nonce)(check)(encrypted) )

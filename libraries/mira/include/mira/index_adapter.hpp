@@ -402,6 +402,48 @@ struct multi_index_adapter
       return result;
    }
 
+   void begin_bulk_load()
+   {
+      return boost::apply_visitor(
+         [&]( auto& index )
+         {
+            index.begin_bulk_load();
+         },
+         _index
+      );
+   }
+
+   void end_bulk_load()
+   {
+      return boost::apply_visitor(
+         [&]( auto& index )
+         {
+            index.end_bulk_load();
+         },
+         _index
+      );
+   }
+
+   void flush_bulk_load()
+   {
+      return boost::apply_visitor(
+         [&]( auto& index )
+         {
+            index.end_bulk_load();
+         },
+         _index
+      );
+   }
+
+   template< typename Lambda >
+   void bulk_load( Lambda&& l )
+   {
+      return boost::apply_visitor(
+         [&]( auto& index ){ index.bulk_load( l ); },
+         _index
+      );
+   }
+
    iter_type iterator_to( const value_type& v )
    {
       return boost::apply_visitor(
@@ -478,8 +520,26 @@ struct multi_index_adapter
       return boost::make_reverse_iterator( begin() );
    }
 
-   bool open( const boost::filesystem::path& p, const boost::any& o )
+   bool open( const boost::filesystem::path& p, const boost::any& o, index_type type = index_type::mira )
    {
+      if( type != _type )
+      {
+         index_variant new_index;
+
+         switch( type )
+         {
+            case mira:
+               new_index = std::move( mira_type( p, o ) );
+               break;
+            case bmic:
+               new_index = std::move( bmic_type() );
+               break;
+         }
+
+         _index = std::move( new_index );
+         _type = type;
+      }
+
       return boost::apply_visitor(
          [&p, &o]( auto& index ){ return index.open( p, o ); },
          _index

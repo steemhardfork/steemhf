@@ -10,6 +10,7 @@
 #include <steem/chain/transaction_object.hpp>
 #include <steem/chain/witness_objects.hpp>
 #include <steem/chain/database.hpp>
+#include <steem/chain/smt_objects/account_balance_object.hpp>
 
 namespace steem { namespace plugins { namespace database_api {
 
@@ -230,11 +231,9 @@ struct api_account_object
       }
 #endif
 
-#ifdef STEEM_ENABLE_SMT
       const auto& by_control_account_index = db.get_index<smt_token_index>().indices().get<by_control_account>();
       auto smt_obj_itr = by_control_account_index.find( name );
       is_smt = smt_obj_itr != by_control_account_index.end();
-#endif
    }
 
 
@@ -540,8 +539,6 @@ struct api_hardfork_property_object
    fc::time_point_sec            next_hardfork_time;
 };
 
-#ifdef STEEM_ENABLE_SMT
-
 struct api_smt_token_object
 {
    api_smt_token_object( const smt_token_object& token, const database& db ) : token( token )
@@ -554,8 +551,6 @@ struct api_smt_token_object
    smt_token_object                token;
    fc::optional< smt_ico_object >  ico;
 };
-
-#endif
 
 enum proposal_status
 {
@@ -620,9 +615,10 @@ struct api_proposal_vote_object
 struct order
 {
    price                order_price;
-   double               real_price; // dollars per steem
-   share_type           steem;
-   share_type           sbd;
+   std::string          decimal_price;
+   double               real_price;
+   asset                for_sale;
+   asset                to_receive;
    fc::time_point_sec   created;
 };
 
@@ -630,6 +626,63 @@ struct order_book
 {
    vector< order >      asks;
    vector< order >      bids;
+};
+
+struct api_smt_account_balance_object
+{
+   api_smt_account_balance_object() = default;
+
+   api_smt_account_balance_object( const account_regular_balance_object& b, const database& db ) :
+      id( b.id ),
+      name( b.name ),
+      liquid( b.liquid ),
+      vesting_shares( b.vesting_shares ),
+      delegated_vesting_shares( b.delegated_vesting_shares ),
+      received_vesting_shares( b.received_vesting_shares ),
+      vesting_withdraw_rate( b.vesting_withdraw_rate ),
+      next_vesting_withdrawal( b.next_vesting_withdrawal ),
+      withdrawn( b.withdrawn ),
+      to_withdraw( b.to_withdraw ),
+      voting_manabar( b.voting_manabar ),
+      downvote_manabar( b.downvote_manabar ),
+      last_vote_time( b.last_vote_time )
+   {
+      auto rewards = db.find< account_rewards_balance_object, by_name_liquid_symbol >( boost::make_tuple( name, liquid.symbol ) );
+      if( rewards != nullptr )
+      {
+         pending_liquid = rewards->pending_liquid;
+         pending_vesting_shares = rewards->pending_vesting_shares;
+         pending_vesting_value = rewards->pending_vesting_value;
+      }
+      else
+      {
+         pending_liquid = asset( 0, liquid.symbol );
+         pending_vesting_shares = asset( 0, liquid.symbol.get_paired_symbol() );
+         pending_vesting_value = asset( 0, liquid.symbol );;
+      }
+   }
+
+   api_id_type         id;
+   account_name_type   name;
+   asset               liquid;
+
+   asset               vesting_shares;
+   asset               delegated_vesting_shares;
+   asset               received_vesting_shares;
+
+   asset               vesting_withdraw_rate;
+   time_point_sec      next_vesting_withdrawal = fc::time_point_sec::maximum();
+   share_type          withdrawn               = 0;
+   share_type          to_withdraw             = 0;
+
+   util::manabar       voting_manabar;
+   util::manabar       downvote_manabar;
+
+   fc::time_point_sec  last_vote_time;
+
+   asset               pending_liquid;
+   asset               pending_vesting_shares;
+   asset               pending_vesting_value;
 };
 
 } } } // steem::plugins::database_api
@@ -750,14 +803,10 @@ FC_REFLECT( steem::plugins::database_api::api_hardfork_property_object,
             (next_hardfork_time)
           )
 
-#ifdef STEEM_ENABLE_SMT
-
 FC_REFLECT( steem::plugins::database_api::api_smt_token_object,
    (token)
    (ico)
 )
-
-#endif
 
 FC_REFLECT_ENUM( steem::plugins::database_api::proposal_status,
                   (all)
@@ -787,6 +836,25 @@ FC_REFLECT( steem::plugins::database_api::api_proposal_vote_object,
             (proposal)
           )
 
-FC_REFLECT( steem::plugins::database_api::order, (order_price)(real_price)(steem)(sbd)(created) );
+FC_REFLECT( steem::plugins::database_api::order, (order_price)(decimal_price)(real_price)(for_sale)(to_receive)(created) );
 
 FC_REFLECT( steem::plugins::database_api::order_book, (asks)(bids) );
+
+FC_REFLECT( steem::plugins::database_api::api_smt_account_balance_object,
+            (id)
+            (name)
+            (liquid)
+            (vesting_shares)
+            (delegated_vesting_shares)
+            (received_vesting_shares)
+            (vesting_withdraw_rate)
+            (next_vesting_withdrawal)
+            (withdrawn)
+            (to_withdraw)
+            (voting_manabar)
+            (downvote_manabar)
+            (last_vote_time)
+            (pending_liquid)
+            (pending_vesting_shares)
+            (pending_vesting_value)
+          )

@@ -71,6 +71,7 @@ namespace steem {
 
       typedef fc::ecc::private_key        private_key_type;
       typedef fc::sha256                  chain_id_type;
+      typedef fixed_string<8>             smt_ticker_type;
       typedef fixed_string<16>            account_name_type;
       typedef fc::ripemd160               block_id_type;
       typedef fc::ripemd160               checksum_type;
@@ -81,6 +82,7 @@ namespace steem {
       typedef uint16_t                    weight_type;
       typedef uint32_t                    contribution_id_type;
       typedef fixed_string<32>            custom_id_type;
+      typedef fixed_string<32>            unit_target_type;
 
 
       struct public_key_type

@@ -56,7 +56,12 @@ enum sort_order_type
    by_voter_proposal,
    by_proposal_voter,
    by_contributor,
-   by_symbol_id
+   by_symbol_id,
+   by_comment_voter_symbol,
+   by_voter_comment_symbol,
+   by_comment_symbol_voter,
+   by_voter_symbol_comment,
+   by_account_symbol
 };
 
 enum order_direction_type
@@ -403,6 +408,7 @@ struct find_votes_args
 {
    account_name_type author;
    string            permlink;
+   asset_symbol_type symbol = STEEM_SYMBOL;
 };
 
 typedef list_votes_return find_votes_return;
@@ -431,6 +437,8 @@ typedef list_limit_orders_return find_limit_orders_return;
 struct get_order_book_args
 {
    uint32_t          limit;
+   asset_symbol_type base;
+   asset_symbol_type quote;
 };
 
 typedef order_book get_order_book_return;
@@ -513,7 +521,8 @@ typedef get_required_signatures_return get_potential_signatures_return;
 
 struct verify_authority_args
 {
-   signed_transaction trx;
+   signed_transaction         trx;
+   fc::optional< authority >  auth;
 };
 
 struct verify_authority_return
@@ -564,8 +573,6 @@ struct verify_signatures_return
    bool valid;
 };
 
-#ifdef STEEM_ENABLE_SMT
-
 typedef void_type get_nai_pool_args;
 
 struct get_nai_pool_return
@@ -599,7 +606,6 @@ struct list_smt_tokens_return
 struct find_smt_tokens_args
 {
    vector< asset_symbol_type > symbols;
-   bool ignore_precision = false;
 };
 
 typedef list_smt_tokens_return find_smt_tokens_return;
@@ -619,7 +625,20 @@ struct find_smt_token_emissions_args
 
 typedef list_smt_token_emissions_return find_smt_token_emissions_return;
 
-#endif
+struct find_smt_token_balances_args
+{
+   vector< std::pair< account_name_type, asset_symbol_type > > account_symbols;
+};
+
+struct find_smt_token_balances_return
+{
+   vector< api_smt_account_balance_object > balances;
+};
+
+typedef list_object_args_type list_smt_token_balances_args;
+
+typedef find_smt_token_balances_return list_smt_token_balances_return;
+
 
 } } } // steem::database_api
 
@@ -666,7 +685,12 @@ FC_REFLECT_ENUM( steem::plugins::database_api::sort_order_type,
    (by_voter_proposal)
    (by_proposal_voter)
    (by_contributor)
-   (by_symbol_id) )
+   (by_symbol_id)
+   (by_comment_voter_symbol)
+   (by_voter_comment_symbol)
+   (by_comment_symbol_voter)
+   (by_voter_symbol_comment)
+   (by_account_symbol) )
 
 FC_REFLECT_ENUM( steem::plugins::database_api::order_direction_type,
   (ascending)
@@ -770,7 +794,7 @@ FC_REFLECT( steem::plugins::database_api::list_votes_return,
    (votes) )
 
 FC_REFLECT( steem::plugins::database_api::find_votes_args,
-   (author)(permlink) )
+   (author)(permlink)(symbol) )
 
 FC_REFLECT( steem::plugins::database_api::list_limit_orders_return,
    (orders) )
@@ -779,7 +803,7 @@ FC_REFLECT( steem::plugins::database_api::find_limit_orders_args,
    (account) )
 
 FC_REFLECT( steem::plugins::database_api::get_order_book_args,
-   (limit) )
+   (limit)(base)(quote) )
 
 FC_REFLECT( steem::plugins::database_api::list_proposals_args,
    (start)(limit)(order)(order_direction)(status) )
@@ -810,7 +834,8 @@ FC_REFLECT( steem::plugins::database_api::get_potential_signatures_args,
    (trx) )
 
 FC_REFLECT( steem::plugins::database_api::verify_authority_args,
-   (trx) )
+   (trx)
+   (auth) )
 
 FC_REFLECT( steem::plugins::database_api::verify_authority_return,
    (valid) )
@@ -830,8 +855,6 @@ FC_REFLECT( steem::plugins::database_api::verify_signatures_args,
 FC_REFLECT( steem::plugins::database_api::verify_signatures_return,
    (valid) )
 
-#ifdef STEEM_ENABLE_SMT
-
 FC_REFLECT( steem::plugins::database_api::get_nai_pool_return,
    (nai_pool) )
 
@@ -845,7 +868,7 @@ FC_REFLECT( steem::plugins::database_api::list_smt_tokens_return,
    (tokens) )
 
 FC_REFLECT( steem::plugins::database_api::find_smt_tokens_args,
-   (symbols)(ignore_precision) )
+   (symbols) )
 
 FC_REFLECT( steem::plugins::database_api::list_smt_token_emissions_return,
    (token_emissions) )
@@ -853,4 +876,9 @@ FC_REFLECT( steem::plugins::database_api::list_smt_token_emissions_return,
 FC_REFLECT( steem::plugins::database_api::find_smt_token_emissions_args,
    (asset_symbol) )
 
-#endif
+FC_REFLECT( steem::plugins::database_api::find_smt_token_balances_args,
+   (account_symbols) )
+
+FC_REFLECT( steem::plugins::database_api::find_smt_token_balances_return,
+   (balances) )
+

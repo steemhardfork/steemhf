@@ -128,7 +128,7 @@ public:
 
   multi_index_container():
     super(ctor_args_list()),
-    entry_count(0)
+    _entry_count(0)
    {
       std::vector< std::string > split_v;
       auto type = boost::core::demangle( typeid( Value ).name() );
@@ -140,7 +140,7 @@ public:
 
   explicit multi_index_container( const boost::filesystem::path& p, const boost::any& cfg ):
     super(ctor_args_list()),
-    entry_count(0)
+    _entry_count(0)
    {
       std::vector< std::string > split_v;
       auto type = boost::core::demangle( typeid( Value ).name() );
@@ -157,7 +157,7 @@ public:
    template< typename InputIterator >
    explicit multi_index_container( InputIterator& first, InputIterator& last, const boost::filesystem::path& p, const boost::any& cfg ):
     super(ctor_args_list()),
-    entry_count(0)
+    _entry_count(0)
    {
       std::vector< std::string > split_v;
       auto type = boost::core::demangle( typeid( Value ).name() );
@@ -168,12 +168,14 @@ public:
 
       open( p, cfg );
 
-      while( first != last )
+      bulk_load( [&]()
       {
-         insert_( *(const_cast<value_type*>(first.operator->())) );
-         ++first;
-         ++entry_count;
-      }
+         while( first != last )
+         {
+            insert_( *first );
+            ++first;
+         }
+      });
 
       BOOST_MULTI_INDEX_CHECK_INVARIANT;
    }
@@ -186,7 +188,7 @@ public:
       _stats( other._stats ),
       _wopts( other._wopts ),
       _ropts( other._ropts ),
-      entry_count( other.entry_count )
+      _entry_count( other._entry_count )
    {}
 
    multi_index_container( multi_index_container&& other ) :
@@ -196,7 +198,7 @@ public:
       _stats( std::move( other._stats ) ),
       _wopts( std::move( other._wopts ) ),
       _ropts( std::move( other._ropts ) ),
-      entry_count( other.entry_count )
+      _entry_count( other._entry_count )
    {}
 
    multi_index_container& operator=( const multi_index_container& rhs )
@@ -207,7 +209,7 @@ public:
       _stats = rhs._stats;
       _wopts = rhs._wopts;
       _ropts = rhs._ropts;
-      entry_count = rhs.entry_count;
+      _entry_count = rhs._entry_count;
 
       return *this;
    }
@@ -220,7 +222,7 @@ public:
       _stats = std::move( rhs._stats );
       _wopts = std::move( rhs._wopts );
       _ropts = std::move( rhs._ropts );
-      entry_count = rhs.entry_count;
+      _entry_count = rhs._entry_count;
 
       return *this;
    }
@@ -284,7 +286,7 @@ public:
 
          if( s.ok() )
          {
-            entry_count = fc::raw::unpack_from_char_array< uint64_t >( value_slice.data(), value_slice.size() );
+            _entry_count = fc::raw::unpack_from_char_array< uint64_t >( value_slice.data(), value_slice.size() );
          }
 
          auto ser_rev_key = fc::raw::pack_to_vector( REVISION_KEY );
@@ -318,7 +320,7 @@ public:
       if( super::_db && super::_db.unique() )
       {
          auto ser_count_key = fc::raw::pack_to_vector( ENTRY_COUNT_KEY );
-         auto ser_count_val = fc::raw::pack_to_vector( entry_count );
+         auto ser_count_val = fc::raw::pack_to_vector( _entry_count );
 
          super::_db->Put(
             _wopts,
@@ -595,12 +597,12 @@ primary_iterator erase( primary_iterator position )
 
   bool empty_()const
   {
-    return entry_count==0;
+    return _entry_count==0;
   }
 
   uint64_t size_()const
   {
-    return entry_count;
+    return _entry_count;
   }
 
   uint64_t max_size_()const
@@ -615,29 +617,41 @@ primary_iterator erase( primary_iterator position )
       return insert_( v );
    }
 
-   bool insert_( value_type& v )
+   bool insert_( const value_type& v )
    {
-      bool status = false;
-      if( super::insert_rocksdb_( v ) )
+      bool status = super::insert_rocksdb_( v );
+
+      if( !_bulk_load )
       {
-         auto retval = super::_db->Write( _wopts, super::_write_buffer.GetWriteBatch() );
-         status = retval.ok();
          if( status )
          {
-            ++entry_count;
-            super::commit_first_key_update();
+            auto retval = super::_db->Write( _wopts, super::_write_buffer.GetWriteBatch() );
+            status = retval.ok();
+            if( status )
+            {
+               ++_entry_count;
+               super::commit_first_key_update();
+            }
+            else
+            {
+               elog( "${e}", ("e", retval.ToString()) );
+               super::reset_first_key_update();
+            }
          }
          else
          {
-            elog( "${e}", ("e", retval.ToString()) );
             super::reset_first_key_update();
          }
+
+         super::_write_buffer.Clear();
       }
       else
       {
-         super::reset_first_key_update();
+         ++_entry_count;
+         super::commit_first_key_update();
+
+         if( _batch_count > 1000 ) flush_bulk_load();
       }
-      super::_write_buffer.Clear();
 
       return status;
    }
@@ -649,7 +663,7 @@ primary_iterator erase( primary_iterator position )
       bool status = retval.ok();
       if( status )
       {
-         --entry_count;
+         --_entry_count;
          std::lock_guard< std::mutex > lock( super::_cache->get_lock() );
          super::_cache->invalidate( v );
          super::commit_first_key_update();
@@ -667,7 +681,7 @@ primary_iterator erase( primary_iterator position )
   {
     super::clear_();
     super::_cache->clear();
-    entry_count=0;
+    _entry_count=0;
   }
 
    template< typename Modifier >
@@ -761,8 +775,36 @@ primary_iterator erase( primary_iterator position )
       return status.ok();
    }
 
+   void flush_bulk_load()
+   {
+      super::_db->Write( _wopts, super::_write_buffer.GetWriteBatch() );
+      super::_write_buffer.Clear();
+      _batch_count = 0;
+   }
+
+   void begin_bulk_load()
+   {
+      _bulk_load = true;
+   }
+
+   void end_bulk_load()
+   {
+      flush_bulk_load();
+      _bulk_load = false;
+   }
+
+   template< typename Lambda >
+   void bulk_load( Lambda&& l )
+   {
+      begin_bulk_load();
+      l();
+      end_bulk_load();
+   }
+
 private:
-   uint64_t entry_count;
+   uint64_t _entry_count = 0;
+   uint64_t _batch_count = 0;
+   bool     _bulk_load = false;
 
    size_t get_column_size() const { return super::COLUMN_INDEX; }
 

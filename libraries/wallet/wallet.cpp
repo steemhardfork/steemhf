@@ -354,6 +354,13 @@ public:
       return accounts.front();
    }
 
+   database_api::api_smt_account_balance_object get_smt_balance( string account_name, string nai ) const
+   {
+      auto balances = _remote_api->get_smt_balances( { std::make_pair( account_name, nai ) } );
+      FC_ASSERT( !balances.empty(), "Could not find SMT balance (${n}) for account ${a}", ("n", nai)("a", account_name) );
+      return balances.front();
+   }
+
    string get_wallet_filename() const { return _wallet_filename; }
 
    optional<fc::ecc::private_key>  try_get_private_key(const public_key_type& id)const
@@ -545,8 +552,19 @@ public:
 
    void set_transaction_expiration( uint32_t tx_expiration_seconds )
    {
-      FC_ASSERT( tx_expiration_seconds < STEEM_MAX_TIME_UNTIL_EXPIRATION );
+      FC_ASSERT( tx_expiration_seconds <= STEEM_MAX_TIME_UNTIL_EXPIRATION,
+         "Transaction expiration cannot exceed ${m}",
+         ("m", STEEM_MAX_TIME_UNTIL_EXPIRATION) );
       _tx_expiration_seconds = tx_expiration_seconds;
+   }
+
+   annotated_signed_transaction broadcast_transaction( signed_transaction tx )
+   {
+      auto result = _remote_api->broadcast_transaction_synchronous( tx );
+      annotated_signed_transaction rtrx(tx);
+      rtrx.block_num = result.block_num;
+      rtrx.transaction_num = result.trx_num;
+      return rtrx;
    }
 
    annotated_signed_transaction sign_transaction(
@@ -565,22 +583,56 @@ public:
          for( const auto& a : auth.account_auths )
             req_active_approvals.insert(a.first);
 
-      // std::merge lets us de-duplicate account_id's that occur in both
-      //   sets, and dump them into a vector (as required by remote_db api)
-      //   at the same time
-      vector< account_name_type > v_approving_account_names;
-      std::merge(req_active_approvals.begin(), req_active_approvals.end(),
-                 req_owner_approvals.begin() , req_owner_approvals.end(),
-                 std::back_inserter( v_approving_account_names ) );
+      flat_set< account_name_type > req_approvals;
+      req_approvals.insert( req_owner_approvals.begin(), req_owner_approvals.end() );
+      req_approvals.insert( req_active_approvals.begin(), req_active_approvals.end() );
+      req_approvals.insert( req_posting_approvals.begin(), req_posting_approvals.end() );
 
-      for( const auto& a : req_posting_approvals )
-         v_approving_account_names.push_back(a);
+      vector< account_name_type > v_approving_account_names;
 
       /// TODO: fetch the accounts specified via other_auths as well.
+      v_approving_account_names.insert( v_approving_account_names.end(), req_approvals.begin(), req_approvals.end() );
 
       auto approving_account_objects = _remote_api->get_accounts( v_approving_account_names );
 
-      /// TODO: recursively check one layer deeper in the authority tree for keys
+      vector< account_name_type > req_account_auths;
+      for( const auto& acc : approving_account_objects )
+      {
+         if( req_owner_approvals.find( acc.name ) != req_owner_approvals.end() )
+            for( const auto& auth : acc.owner.account_auths )
+            {
+               if( req_approvals.insert( auth.first ).second )
+               {
+                  req_owner_approvals.insert( auth.first );
+                  req_account_auths.push_back( auth.first );
+               }
+            }
+
+         if( req_active_approvals.find( acc.name ) != req_active_approvals.end() )
+            for( const auto& auth : acc.active.account_auths )
+            {
+               if( req_approvals.insert( auth.first ).second )
+               {
+                  req_active_approvals.insert( auth.first );
+                  req_account_auths.push_back( auth.first );
+               }
+            }
+
+         if( req_posting_approvals.find( acc.name ) != req_posting_approvals.end() )
+            for( const auto& auth : acc.posting.account_auths )
+            {
+               if( req_approvals.insert( auth.first ).second )
+               {
+                  req_posting_approvals.insert( auth.first );
+                  req_account_auths.push_back( auth.first );
+               }
+            }
+      }
+
+      v_approving_account_names.insert( v_approving_account_names.end(), req_account_auths.begin(), req_account_auths.end() );
+
+      auto approving_account_auth_objects = _remote_api->get_accounts( req_account_auths );
+      approving_account_objects.insert( approving_account_objects.end(), approving_account_auth_objects.begin(), approving_account_auth_objects.end() );
 
       FC_ASSERT( approving_account_objects.size() == v_approving_account_names.size(), "", ("aco.size:", approving_account_objects.size())("acn",v_approving_account_names.size()) );
 
@@ -605,11 +657,6 @@ public:
          if( it != approving_account_lut.end() )
          {
             result = &(it->second);
-         }
-         else
-         {
-            elog( "Tried to access authority for account ${a}.", ("a", name) );
-            elog( "Is it possible you are using an account authority? Signing with an account authority is currently not supported." );
          }
 
          return result;
@@ -732,11 +779,7 @@ public:
       {
          try
          {
-            auto result = _remote_api->broadcast_transaction_synchronous( condenser_api::legacy_signed_transaction( tx ) );
-            annotated_signed_transaction rtrx(tx);
-            rtrx.block_num = result.block_num;
-            rtrx.transaction_num = result.trx_num;
-            return rtrx;
+            return broadcast_transaction( tx );
          }
          catch (const fc::exception& e)
          {
@@ -744,6 +787,34 @@ public:
             throw;
          }
       }
+      return tx;
+   }
+
+   annotated_signed_transaction sign_transaction_with_key(
+      signed_transaction tx,
+      public_key_type key,
+      bool broadcast )
+   {
+      auto it = _keys.find( key );
+      FC_ASSERT( it != _keys.end(), "Cannot find private key for ${k}", ("k",key) );
+      fc::optional<fc::ecc::private_key> optional_private_key = wif_to_key(it->second);
+      FC_ASSERT( optional_private_key.valid(), "Could not convert wif to private key" );
+
+      tx.sign( *optional_private_key, steem_chain_id, fc::ecc::fc_canonical );
+
+      if( broadcast )
+      {
+         try
+         {
+            return broadcast_transaction( tx );
+         }
+         catch (const fc::exception& e)
+         {
+            elog("Caught exception while broadcasting tx ${id}:  ${e}", ("id", tx.id().str())("e", e.to_detail_string()) );
+            throw;
+         }
+      }
+
       return tx;
    }
 
@@ -901,6 +972,28 @@ public:
 
          return ss.str();
       };
+      m["get_smt_balance"] = []( variant result, const fc::variants& a )
+      {
+         auto balance = result.as< database_api::api_smt_account_balance_object >();
+         std::stringstream ss;
+
+         ss << ' ' << std::left  << std::setw( 17 ) << "Account";
+         ss << ' ' << std::right << std::setw( 30 ) << "Liquid";
+         ss << ' ' << std::right << std::setw( 30 ) << "Vesting";
+         ss << ' ' << std::right << std::setw( 30 ) << "Pending Liquid";
+         ss << ' ' << std::right << std::setw( 30 ) << "Pending Vesting";
+
+
+         ss << "\n==============================================================================================================================================\n";
+
+         ss << ' ' << std::left  << std::setw( 17 ) << std::string(balance.name)
+            << ' ' << std::right << std::setw( 30 ) << legacy_asset::from_asset(balance.liquid).to_string()
+            << ' ' << std::right << std::setw( 30 ) << legacy_asset::from_asset(balance.vesting_shares).to_string()
+            << ' ' << std::right << std::setw( 30 ) << legacy_asset::from_asset(balance.pending_liquid).to_string()
+            << ' ' << std::right << std::setw( 30 ) << legacy_asset::from_asset(balance.pending_vesting_shares).to_string() << "\n";
+
+         return ss.str();
+      };
 
       return m;
    }
@@ -938,8 +1031,8 @@ public:
 
 namespace steem { namespace wallet {
 
-wallet_api::wallet_api(const wallet_data& initial_data, const steem::protocol::chain_id_type& _steem_chain_id, fc::api< remote_node_api > rapi)
-   : my(new detail::wallet_api_impl(*this, initial_data, _steem_chain_id, rapi))
+wallet_api::wallet_api(const wallet_data& initial_data, const steem::protocol::chain_id_type& _steem_chain_id, fc::api< remote_node_api > rapi, std::shared_ptr<fc::rpc::cli> _cli )
+   : my(new detail::wallet_api_impl(*this, initial_data, _steem_chain_id, rapi)), cli(_cli)
 {}
 
 wallet_api::~wallet_api(){}
@@ -1039,6 +1132,11 @@ condenser_api::api_account_object wallet_api::get_account( string account_name )
    return my->get_account( account_name );
 }
 
+database_api::api_smt_account_balance_object wallet_api::get_smt_balance( string account_name, string nai ) const
+{
+   return my->get_smt_balance( account_name, nai );
+}
+
 bool wallet_api::import_key(string wif_key)
 {
    FC_ASSERT(!is_locked());
@@ -1101,6 +1199,19 @@ condenser_api::legacy_signed_transaction wallet_api::sign_transaction(
    signed_transaction appbase_tx( tx );
    condenser_api::annotated_signed_transaction result = my->sign_transaction( appbase_tx, broadcast);
    return condenser_api::legacy_signed_transaction( result );
+} FC_CAPTURE_AND_RETHROW( (tx) ) }
+
+condenser_api::legacy_signed_transaction wallet_api::sign_transaction_with_key(
+   condenser_api::legacy_signed_transaction tx, public_key_type key, bool broadcast /* = false */)
+{ try {
+   signed_transaction appbase_tx( tx );
+   condenser_api::annotated_signed_transaction result = my->sign_transaction_with_key( appbase_tx, key, broadcast );
+   return condenser_api::legacy_signed_transaction( result );
+} FC_CAPTURE_AND_RETHROW( (tx) ) }
+
+annotated_signed_transaction wallet_api::broadcast_transaction( condenser_api::legacy_signed_transaction tx )
+{ try {
+   return my->broadcast_transaction( tx );
 } FC_CAPTURE_AND_RETHROW( (tx) ) }
 
 operation wallet_api::get_prototype_operation(string operation_name) {
@@ -1199,6 +1310,12 @@ void wallet_api::set_password( string password )
       FC_ASSERT( !is_locked(), "The wallet must be unlocked before the password can be set" );
    my->_checksum = fc::sha512::hash( password.c_str(), password.size() );
    lock();
+}
+
+void wallet_api::exit()
+{
+   if( !is_locked() ) lock();
+   cli->stop();
 }
 
 map<public_key_type, string> wallet_api::list_keys()
@@ -2490,6 +2607,186 @@ condenser_api::legacy_signed_transaction wallet_api::follow( string follower, st
       trx.operations.push_back( rp );
       trx.validate();
       return my->sign_transaction( trx, broadcast );
+   }
+
+   condenser_api::legacy_signed_transaction wallet_api::create_smt(
+      account_name_type control_account,
+      asset_symbol_type symbol,
+      asset smt_creation_fee,
+      uint8_t precision,
+      bool broadcast )
+   {
+      FC_ASSERT( !is_locked() );
+
+      smt_create_operation op;
+      op.control_account = control_account;
+      op.symbol = symbol;
+      op.smt_creation_fee = smt_creation_fee;
+      op.precision = precision;
+
+      signed_transaction trx;
+      trx.operations.push_back( op );
+      trx.validate();
+      return my->sign_transaction( trx, broadcast );
+   }
+
+   condenser_api::legacy_signed_transaction wallet_api::smt_set_setup_parameters(
+      account_name_type control_account,
+      asset_symbol_type symbol,
+      string json_setup_parameters,
+      bool broadcast )
+   {
+      FC_ASSERT( !is_locked() );
+
+      smt_set_setup_parameters_operation op;
+      op.control_account = control_account;
+      op.symbol = symbol;
+      op.setup_parameters = fc::json::from_string( json_setup_parameters ).as< flat_set< smt_setup_parameter > >();
+
+      signed_transaction trx;
+      trx.operations.push_back( op );
+      trx.validate();
+      return my->sign_transaction( trx, broadcast );
+   }
+
+   condenser_api::legacy_signed_transaction wallet_api::smt_set_runtime_parameters(
+      account_name_type control_account,
+      asset_symbol_type symbol,
+      string json_runtime_parameters,
+      bool broadcast )
+   {
+      FC_ASSERT( !is_locked() );
+
+      smt_set_runtime_parameters_operation op;
+      op.control_account = control_account;
+      op.symbol = symbol;
+      op.runtime_parameters = fc::json::from_string( json_runtime_parameters ).as< flat_set< smt_runtime_parameter > >();
+
+      signed_transaction trx;
+      trx.operations.push_back( op );
+      trx.validate();
+      return my->sign_transaction( trx, broadcast );
+   }
+
+   condenser_api::legacy_signed_transaction wallet_api::smt_setup_emissions(
+      account_name_type control_account,
+      asset_symbol_type symbol,
+      time_point_sec schedule_time,
+      string json_emission_unit,
+      uint32_t interval_seconds,
+      uint32_t emission_count,
+      time_point_sec lep_time,
+      time_point_sec rep_time,
+      share_type lep_abs_amount,
+      share_type rep_abs_amount,
+      uint32_t lep_rel_amount_numerator,
+      uint32_t rep_rel_amount_numerator,
+      uint8_t rel_amount_denom_bits,
+      bool remove,
+      bool floor_emissions,
+      bool broadcast )
+   {
+      FC_ASSERT( !is_locked() );
+
+      smt_setup_emissions_operation op;
+      op.control_account = control_account;
+      op.symbol = symbol;
+      op.schedule_time = schedule_time;
+      op.emissions_unit = fc::json::from_string( json_emission_unit ).as < smt_emissions_unit >();
+      op.interval_seconds = interval_seconds;
+      op.emission_count = emission_count;
+      op.lep_time = lep_time;
+      op.rep_time = rep_time;
+      op.lep_abs_amount = lep_abs_amount;
+      op.rep_abs_amount = rep_abs_amount;
+      op.lep_rel_amount_numerator = lep_rel_amount_numerator;
+      op.rep_rel_amount_numerator = rep_rel_amount_numerator;
+      op.rel_amount_denom_bits = rel_amount_denom_bits;
+      op.remove = remove;
+      op.floor_emissions = floor_emissions;
+
+      signed_transaction trx;
+      trx.operations.push_back( op );
+      trx.validate();
+      return my->sign_transaction( trx, broadcast );
+   }
+
+   condenser_api::legacy_signed_transaction wallet_api::smt_setup_ico_tier(
+      account_name_type control_account,
+      asset_symbol_type symbol,
+      share_type steem_satoshi_cap,
+      string json_generation_policy,
+      bool broadcast )
+   {
+      FC_ASSERT( !is_locked() );
+
+      smt_setup_ico_tier_operation op;
+      op.control_account = control_account;
+      op.symbol = symbol;
+      op.generation_policy = fc::json::from_string( json_generation_policy ).as< smt_generation_policy >();
+      op.steem_satoshi_cap = steem_satoshi_cap;
+
+      signed_transaction trx;
+      trx.operations.push_back( op );
+      trx.validate();
+      return my->sign_transaction( trx, broadcast );
+   }
+
+   condenser_api::legacy_signed_transaction wallet_api::smt_setup(
+      account_name_type control_account,
+      asset_symbol_type symbol,
+      int64_t max_supply,
+      time_point_sec contribution_begin_time,
+      time_point_sec contribution_end_time,
+      time_point_sec launch_time,
+      share_type steem_satoshi_min,
+      uint32_t min_unit_ratio,
+      uint32_t max_unit_ratio,
+      bool broadcast )
+   {
+      FC_ASSERT( !is_locked() );
+
+      smt_setup_operation op;
+      op.control_account = control_account;
+      op.symbol = symbol;
+      op.max_supply = max_supply;
+      op.contribution_begin_time = contribution_begin_time;
+      op.contribution_end_time = contribution_end_time;
+      op.launch_time = launch_time;
+      op.steem_satoshi_min = steem_satoshi_min;
+      op.min_unit_ratio = min_unit_ratio;
+      op.max_unit_ratio = max_unit_ratio;
+
+      signed_transaction trx;
+      trx.operations.push_back( op );
+      trx.validate();
+      return my->sign_transaction( trx, broadcast );
+   }
+
+   condenser_api::legacy_signed_transaction wallet_api::smt_contribute(
+      account_name_type contributor,
+      asset_symbol_type symbol,
+      uint32_t contribution_id,
+      asset contribution,
+      bool broadcast )
+   {
+      FC_ASSERT( !is_locked() );
+
+      smt_contribute_operation op;
+      op.contributor = contributor;
+      op.symbol = symbol;
+      op.contribution_id = contribution_id;
+      op.contribution = contribution;
+
+      signed_transaction trx;
+      trx.operations.push_back( op );
+      trx.validate();
+      return my->sign_transaction( trx, broadcast );
+   }
+
+   vector< asset_symbol_type > wallet_api::get_nai_pool()
+   {
+      return my->_remote_api->get_nai_pool();
    }
 
 } } // steem::wallet

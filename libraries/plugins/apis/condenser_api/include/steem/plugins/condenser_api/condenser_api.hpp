@@ -378,7 +378,8 @@ struct extended_dynamic_global_properties
       recent_slots_filled( o.recent_slots_filled ),
       participation_count( o.participation_count ),
       last_irreversible_block_num( o.last_irreversible_block_num ),
-      vote_power_reserve_rate( o.vote_power_reserve_rate ),
+      target_votes_per_period( o.target_votes_per_period ),
+      vote_power_reserve_rate( o.target_votes_per_period ),
       delegation_return_period( o.delegation_return_period ),
       reverse_auction_seconds( o.reverse_auction_seconds ),
       available_account_subsidies( o.available_account_subsidies ),
@@ -426,6 +427,7 @@ struct extended_dynamic_global_properties
 
    uint32_t          last_irreversible_block_num = 0;
 
+   uint32_t          target_votes_per_period = STEEM_INITIAL_VOTE_POWER_RATE;
    uint32_t          vote_power_reserve_rate = STEEM_INITIAL_VOTE_POWER_RATE;
    uint32_t          delegation_return_period = STEEM_DELEGATION_RETURN_PERIOD_HF0;
 
@@ -843,12 +845,13 @@ typedef vector< variant > get_version_args;
 struct get_version_return
 {
    get_version_return() {}
-   get_version_return( fc::string bc_v, fc::string s_v, fc::string fc_v )
-      :blockchain_version( bc_v ), steem_revision( s_v ), fc_revision( fc_v ) {}
+   get_version_return( fc::string bc_v, fc::string s_v, fc::string fc_v, chain_id_type c_id )
+      :blockchain_version( bc_v ), steem_revision( s_v ), fc_revision( fc_v ), chain_id( c_id ) {}
 
-   fc::string blockchain_version;
-   fc::string steem_revision;
-   fc::string fc_revision;
+   fc::string     blockchain_version;
+   fc::string     steem_revision;
+   fc::string     fc_revision;
+   chain_id_type  chain_id;
 };
 
 typedef map< uint32_t, api_operation_object > get_account_history_return_type;
@@ -1070,10 +1073,12 @@ DEFINE_API_ARGS( get_order_book,                         vector< variant >,   or
 DEFINE_API_ARGS( get_trade_history,                      vector< variant >,   vector< market_trade > )
 DEFINE_API_ARGS( get_recent_trades,                      vector< variant >,   vector< market_trade > )
 DEFINE_API_ARGS( get_market_history,                     vector< variant >,   vector< market_history::bucket_object > )
-DEFINE_API_ARGS( get_market_history_buckets,             vector< variant >,   flat_set< uint32_t > )
+DEFINE_API_ARGS( get_market_history_buckets,             vector< variant >,   vector< uint32_t > )
 DEFINE_API_ARGS( list_proposals,                         vector< variant >,   vector< api_proposal_object > )
 DEFINE_API_ARGS( find_proposals,                         vector< variant >,   vector< api_proposal_object > )
 DEFINE_API_ARGS( list_proposal_votes,                    vector< variant >,   vector< database_api::api_proposal_vote_object > )
+DEFINE_API_ARGS( get_nai_pool,                           vector< variant >,   vector< asset_symbol_type > )
+DEFINE_API_ARGS( get_smt_balances,                       vector< variant >,   vector< database_api::api_smt_account_balance_object > )
 
 #undef DEFINE_API_ARGS
 
@@ -1171,6 +1176,8 @@ public:
       (list_proposals)
       (find_proposals)
       (list_proposal_votes)
+      (get_nai_pool)
+      (get_smt_balances)
    )
 
    private:
@@ -1240,7 +1247,8 @@ FC_REFLECT( steem::plugins::condenser_api::extended_dynamic_global_properties,
             (total_reward_fund_steem)(total_reward_shares2)(pending_rewarded_vesting_shares)(pending_rewarded_vesting_steem)
             (sbd_interest_rate)(sbd_print_rate)
             (maximum_block_size)(required_actions_partition_percent)(current_aslot)(recent_slots_filled)(participation_count)(last_irreversible_block_num)
-            (vote_power_reserve_rate)(delegation_return_period)(reverse_auction_seconds)(available_account_subsidies)(sbd_stop_percent)(sbd_start_percent)
+            (target_votes_per_period)(vote_power_reserve_rate)
+            (delegation_return_period)(reverse_auction_seconds)(available_account_subsidies)(sbd_stop_percent)(sbd_start_percent)
             (next_maintenance_time)(last_budget_time)(content_reward_percent)(vesting_reward_percent)(sps_fund_percent)(sps_interval_ledger)(downvote_pool_percent)
           )
 
@@ -1343,7 +1351,7 @@ FC_REFLECT( steem::plugins::condenser_api::tag_index, (trending) )
 FC_REFLECT_ENUM( steem::plugins::condenser_api::withdraw_route_type, (incoming)(outgoing)(all) )
 
 FC_REFLECT( steem::plugins::condenser_api::get_version_return,
-            (blockchain_version)(steem_revision)(fc_revision) )
+            (blockchain_version)(steem_revision)(fc_revision)(chain_id) )
 
 FC_REFLECT( steem::plugins::condenser_api::broadcast_transaction_synchronous_return,
             (id)(block_num)(trx_num)(expired) )

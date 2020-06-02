@@ -33,11 +33,19 @@
 
 #ifdef IS_TEST_NET
 
+#define VESTS_SYMBOL_STR "VESTS"
+#define STEEM_SYMBOL_STR "TESTS"
+#define SBD_SYMBOL_STR   "TBD"
+
 #define VESTS_SYMBOL_U64  (uint64_t('V') | (uint64_t('E') << 8) | (uint64_t('S') << 16) | (uint64_t('T') << 24) | (uint64_t('S') << 32))
 #define STEEM_SYMBOL_U64  (uint64_t('T') | (uint64_t('E') << 8) | (uint64_t('S') << 16) | (uint64_t('T') << 24) | (uint64_t('S') << 32))
 #define SBD_SYMBOL_U64    (uint64_t('T') | (uint64_t('B') << 8) | (uint64_t('D') << 16))
 
 #else
+
+#define VESTS_SYMBOL_STR "VESTS"
+#define STEEM_SYMBOL_STR "STEEM"
+#define SBD_SYMBOL_STR   "SBD"
 
 #define VESTS_SYMBOL_U64  (uint64_t('V') | (uint64_t('E') << 8) | (uint64_t('S') << 16) | (uint64_t('T') << 24) | (uint64_t('S') << 32))
 #define STEEM_SYMBOL_U64  (uint64_t('S') | (uint64_t('T') << 8) | (uint64_t('E') << 16) | (uint64_t('E') << 24) | (uint64_t('M') << 32))
@@ -56,7 +64,7 @@
 #define SMT_ASSET_NUM_VESTING_MASK     0x20
 
 #define ASSET_SYMBOL_NAI_KEY      "nai"
-#define ASSET_SYMBOL_DECIMALS_KEY "decimals"
+#define ASSET_SYMBOL_DECIMALS_KEY "precision"
 
 namespace steem { namespace protocol {
 
@@ -93,20 +101,28 @@ class asset_symbol_type
 
       uint32_t to_nai()const;
 
-      /**Returns true when symbol represents vesting variant of the token,
+      /**
+       * Returns true when symbol represents vesting variant of the token,
        * false for liquid one.
        */
       bool is_vesting() const;
-      /**Returns vesting symbol when called from liquid one
+
+      /**
+       * Returns vesting symbol when called from liquid one
        * and liquid symbol when called from vesting one.
        * Returns back the SBD symbol if represents SBD.
        */
       asset_symbol_type get_paired_symbol() const;
-      /**Returns asset_num stripped of precision holding bits.
+
+      asset_symbol_type get_vesting_symbol() const;
+      asset_symbol_type get_liquid_symbol() const;
+
+      /**
+       * Returns asset_num stripped of precision holding bits.
        * \warning checking that it's SMT symbol is caller responsibility.
        */
       uint32_t get_stripped_precision_smt_num() const
-      { 
+      {
          return asset_num & ~( SMT_ASSET_NUM_PRECISION_MASK );
       }
 
@@ -236,13 +252,18 @@ inline void from_variant( const fc::variant& var, steem::protocol::asset_symbol_
       FC_ASSERT( nai != o.end(), "Expected key '${key}'.", ("key", ASSET_SYMBOL_NAI_KEY) );
       FC_ASSERT( nai->value().is_string(), "Expected a string type for value '${key}'.", ("key", ASSET_SYMBOL_NAI_KEY) );
 
+      uint8_t precision = 0;
       auto decimals = o.find( ASSET_SYMBOL_DECIMALS_KEY );
-      FC_ASSERT( decimals != o.end(), "Expected key '${key}'.", ("key", ASSET_SYMBOL_DECIMALS_KEY) );
-      FC_ASSERT( decimals->value().is_uint64(), "Expected an unsigned integer type for value '${key}'.", ("key", ASSET_SYMBOL_DECIMALS_KEY) );
-      FC_ASSERT( decimals->value().as_uint64() <= STEEM_ASSET_MAX_DECIMALS,
-         "Expected decimals to be less than or equal to ${num}", ("num", STEEM_ASSET_MAX_DECIMALS) );
+      if( decimals != o.end() )
+      {
+         FC_ASSERT( decimals->value().is_uint64(), "Expected an unsigned integer type for value '${key}'.", ("key", ASSET_SYMBOL_DECIMALS_KEY) );
+         FC_ASSERT( decimals->value().as_uint64() <= STEEM_ASSET_MAX_DECIMALS,
+            "Expected decimals to be less than or equal to ${num}", ("num", STEEM_ASSET_MAX_DECIMALS) );
 
-      sym = asset_symbol_type::from_nai_string( nai->value().as_string().c_str(), decimals->value().as< uint8_t >() );
+         precision = decimals->value().as< uint8_t >();
+      }
+
+      sym = asset_symbol_type::from_nai_string( nai->value().as_string().c_str(), precision );
    } FC_CAPTURE_AND_RETHROW()
 }
 

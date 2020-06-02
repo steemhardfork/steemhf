@@ -10,6 +10,7 @@
 
 #ifdef IS_TEST_NET
 #define STEEM_BLOCKCHAIN_VERSION              ( version(0, 23, 0) )
+#define STEEM_NETWORK_TYPE                    "testnet"
 
 #define STEEM_INIT_PRIVATE_KEY                (fc::ecc::private_key::regenerate(fc::sha256::hash(std::string("init_key"))))
 #define STEEM_INIT_PUBLIC_KEY_STR             (std::string( steem::protocol::public_key_type(STEEM_INIT_PRIVATE_KEY.get_public_key()) ))
@@ -73,6 +74,9 @@
 #define STEEM_SBD_INIT_SUPPLY                 int64_t(0)
 
 #endif
+
+/// Version format string.  The Steem binary will refuse to load a state file where this does not match the built-in version.
+#define STEEM_DB_FORMAT_VERSION               "1"
 
 #define VESTS_SYMBOL  (steem::protocol::asset_symbol_type::from_asset_num( STEEM_ASSET_NUM_VESTS ) )
 #define STEEM_SYMBOL  (steem::protocol::asset_symbol_type::from_asset_num( STEEM_ASSET_NUM_STEEM ) )
@@ -280,6 +284,7 @@
 
 #define STEEM_INITIAL_VOTE_POWER_RATE (40)
 #define STEEM_REDUCED_VOTE_POWER_RATE (10)
+#define STEEM_VOTES_PER_PERIOD_SMT_HF (50)
 
 #define STEEM_MAX_LIMIT_ORDER_EXPIRATION     (60*60*24*28) // 28 days
 #define STEEM_DELEGATION_RETURN_PERIOD_HF0   (STEEM_CASHOUT_WINDOW_SECONDS)
@@ -350,7 +355,6 @@
 /// Max number of IDs passed at once to the update_proposal_voter_operation or remove_proposal_operation.
 #define STEEM_PROPOSAL_MAX_IDS_NUMBER              5
 
-#ifdef STEEM_ENABLE_SMT
 
 #define SMT_MAX_VOTABLE_ASSETS 2
 #define SMT_VESTING_WITHDRAW_INTERVAL_SECONDS   (60*60*24*7) /// 1 week per interval
@@ -361,6 +365,6 @@
 #define SMT_MAX_VOTES_PER_REGENERATION          ((SMT_MAX_NOMINAL_VOTES_PER_DAY * SMT_VESTING_WITHDRAW_INTERVAL_SECONDS) / 86400)
 #define SMT_DEFAULT_VOTES_PER_REGEN_PERIOD      (50)
 #define SMT_DEFAULT_PERCENT_CURATION_REWARDS    (25 * STEEM_1_PERCENT)
-
-#endif /// STEEM_ENABLE_SMT
-
+#define SMT_INITIAL_VESTING_PER_UNIT            (1000000)
+#define SMT_BALLAST_SUPPLY_PERCENT              (STEEM_1_PERCENT/10)
+#define SMT_MAX_ICO_TIERS                       (10)

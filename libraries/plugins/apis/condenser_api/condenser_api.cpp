@@ -135,6 +135,8 @@ namespace detail
             (list_proposals)
             (find_proposals)
             (list_proposal_votes)
+            (get_nai_pool)
+            (get_smt_balances)
          )
 
          void recursively_fetch_content( state& _state, tags::discussion& root, set<string>& referenced_accounts );
@@ -171,7 +173,8 @@ namespace detail
       (
          fc::string( STEEM_BLOCKCHAIN_VERSION ),
          fc::string( steem::utilities::git_revision_sha ),
-         fc::string( fc::git_revision_sha )
+         fc::string( fc::git_revision_sha ),
+         _db.get_chain_id()
       );
    }
 
@@ -1251,8 +1254,14 @@ namespace detail
 
    DEFINE_API_IMPL( condenser_api_impl, verify_authority )
    {
-      CHECK_ARG_SIZE( 1 )
-      return _database_api->verify_authority( { signed_transaction( args[0].as< legacy_signed_transaction >() ) } ).valid;
+      FC_ASSERT( args.size() == 1 || args.size() == 2, "Expected 2-3 arguments, was ${n}", ("n", args.size()) );
+
+      database_api::verify_authority_args a;
+      a.trx = signed_transaction( args[0].as< legacy_signed_transaction >() );
+      if( args.size() == 2 )
+         a.auth = args[1].as< authority >();
+
+      return _database_api->verify_authority( a ).valid;
    }
 
    DEFINE_API_IMPL( condenser_api_impl, verify_account_authority )
@@ -1267,11 +1276,11 @@ namespace detail
 
       vector< tags::vote_state > votes;
       const auto& comment = _db.get_comment( args[0].as< account_name_type >(), args[1].as< string >() );
-      const auto& idx = _db.get_index< chain::comment_vote_index, chain::by_comment_voter >();
+      const auto& idx = _db.get_index< chain::comment_vote_index, chain::by_comment_symbol_voter >();
       chain::comment_id_type cid(comment.id);
-      auto itr = idx.lower_bound( cid );
+      auto itr = idx.lower_bound( boost::make_tuple( cid, STEEM_SYMBOL ) );
 
-      while( itr != idx.end() && itr->comment == cid )
+      while( itr != idx.end() && itr->comment == cid && itr->symbol == STEEM_SYMBOL )
       {
          const auto& vo = _db.get( itr->voter );
          tags::vote_state vstate;
@@ -1305,11 +1314,11 @@ namespace detail
       vector< account_vote > result;
 
       const auto& voter_acnt = _db.get_account( voter );
-      const auto& idx = _db.get_index< comment_vote_index, by_voter_comment >();
+      const auto& idx = _db.get_index< comment_vote_index, by_voter_symbol_comment >();
 
       account_id_type aid( voter_acnt.id );
-      auto itr = idx.lower_bound( aid );
-      auto end = idx.upper_bound( aid );
+      auto itr = idx.lower_bound( boost::make_tuple( aid, STEEM_SYMBOL ) );
+      auto end = idx.upper_bound( boost::make_tuple( aid, STEEM_SYMBOL ) );
       while( itr != end )
       {
          const auto& vo = _db.get( itr->comment );
@@ -1736,7 +1745,12 @@ namespace detail
             std::current_exception() );
       }
 
-      return p.get_future().get();
+      auto future = p.get_future();
+      auto status = future.wait_for( boost::chrono::minutes( 1 ) );
+
+      FC_ASSERT( status == boost::future_status::ready, "A timeout has occurred during broadcast_transaction_synchronous" );
+
+      return future.get();
    }
 
    DEFINE_API_IMPL( condenser_api_impl, broadcast_block )
@@ -1863,7 +1877,7 @@ namespace detail
       FC_ASSERT( args.size() == 0 || args.size() == 1, "Expected 0-1 arguments, was ${n}", ("n", args.size()) );
       FC_ASSERT( _market_history_api, "market_history_api_plugin not enabled." );
 
-      return get_order_book_return( _market_history_api->get_order_book( { args.size() == 1 ? args[0].as< uint32_t >() : 500 } ) );
+      return get_order_book_return( _market_history_api->get_order_book( { SBD_SYMBOL, args.size() == 1 ? args[0].as< uint32_t >() : 500 } ) );
    }
 
    DEFINE_API_IMPL( condenser_api_impl, get_trade_history )
@@ -1871,7 +1885,7 @@ namespace detail
       FC_ASSERT( args.size() == 2 || args.size() == 3, "Expected 2-3 arguments, was ${n}", ("n", args.size()) );
       FC_ASSERT( _market_history_api, "market_history_api_plugin not enabled." );
 
-      const auto& trades = _market_history_api->get_trade_history( { args[0].as< time_point_sec >(), args[1].as< time_point_sec >(), args.size() == 3 ? args[2].as< uint32_t >() : 1000 } ).trades;
+      const auto& trades = _market_history_api->get_trade_history( { SBD_SYMBOL, args[0].as< time_point_sec >(), args[1].as< time_point_sec >(), args.size() == 3 ? args[2].as< uint32_t >() : 1000 } ).trades;
       get_trade_history_return result;
 
       for( const auto& t : trades ) result.push_back( market_trade( t ) );
@@ -1884,7 +1898,7 @@ namespace detail
       FC_ASSERT( args.size() == 0 || args.size() == 1, "Expected 0-1 arguments, was ${n}", ("n", args.size()) );
       FC_ASSERT( _market_history_api, "market_history_api_plugin not enabled." );
 
-      const auto& trades = _market_history_api->get_recent_trades( { args.size() == 1 ? args[0].as< uint32_t >() : 1000 } ).trades;
+      const auto& trades = _market_history_api->get_recent_trades( { SBD_SYMBOL, args.size() == 1 ? args[0].as< uint32_t >() : 1000 } ).trades;
       get_trade_history_return result;
 
       for( const auto& t : trades ) result.push_back( market_trade( t ) );
@@ -1897,7 +1911,7 @@ namespace detail
       CHECK_ARG_SIZE( 3 )
       FC_ASSERT( _market_history_api, "market_history_api_plugin not enabled." );
 
-      return _market_history_api->get_market_history( { args[0].as< uint32_t >(), args[1].as< time_point_sec >(), args[2].as< time_point_sec >() } ).buckets;
+      return _market_history_api->get_market_history( { SBD_SYMBOL, args[0].as< uint32_t >(), args[1].as< time_point_sec >(), args[2].as< time_point_sec >() } ).buckets;
    }
 
    DEFINE_API_IMPL( condenser_api_impl, get_market_history_buckets )
@@ -2108,6 +2122,28 @@ namespace detail
       }
    } FC_LOG_AND_RETHROW() }
 
+   DEFINE_API_IMPL( condenser_api_impl, get_nai_pool )
+   {
+      CHECK_ARG_SIZE( 0 );
+
+      return _database_api->get_nai_pool( {} ).nai_pool;
+   }
+
+   DEFINE_API_IMPL( condenser_api_impl, get_smt_balances )
+   {
+      CHECK_ARG_SIZE( 1 );
+
+      auto acc_syms = args[0].as< vector< std::pair< account_name_type, string > > >();
+      database_api::find_smt_token_balances_args dbapi_args;
+
+      for( const auto& acc_sym : acc_syms )
+      {
+         dbapi_args.account_symbols.push_back( std::make_pair( acc_sym.first, asset_symbol_type::from_nai_string( acc_sym.second.c_str(), 0 ) ) );
+      }
+
+      return _database_api->find_smt_token_balances( dbapi_args ).balances;
+   }
+
 } // detail
 
 uint16_t api_account_object::_compute_voting_power( const database_api::api_account_object& a )
@@ -2307,6 +2343,8 @@ DEFINE_READ_APIS( condenser_api,
    (list_proposals)
    (list_proposal_votes)
    (find_proposals)
+   (get_nai_pool)
+   (get_smt_balances)
 )
 
 } } } // steem::plugins::condenser_api

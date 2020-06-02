@@ -124,7 +124,7 @@ namespace steem { namespace chain {
           * "wasting" voting power through spillover; any user voting faster than this rate will have
           * their votes reduced.
           */
-         uint32_t vote_power_reserve_rate = STEEM_INITIAL_VOTE_POWER_RATE;
+         uint32_t target_votes_per_period = STEEM_INITIAL_VOTE_POWER_RATE;
 
          uint32_t delegation_return_period = STEEM_DELEGATION_RETURN_PERIOD_HF0;
 
@@ -147,9 +147,7 @@ namespace steem { namespace chain {
 
          uint16_t downvote_pool_percent = 0;
 
-#ifdef STEEM_ENABLE_SMT
          asset smt_creation_fee = asset( 1000, SBD_SYMBOL );
-#endif
    };
 
    typedef multi_index_container<
@@ -199,7 +197,7 @@ FC_REFLECT( steem::chain::dynamic_global_property_object,
              (recent_slots_filled)
              (participation_count)
              (last_irreversible_block_num)
-             (vote_power_reserve_rate)
+             (target_votes_per_period)
              (delegation_return_period)
              (reverse_auction_seconds)
              (available_account_subsidies)
@@ -212,8 +210,6 @@ FC_REFLECT( steem::chain::dynamic_global_property_object,
              (sps_fund_percent)
              (sps_interval_ledger)
              (downvote_pool_percent)
-#ifdef STEEM_ENABLE_SMT
              (smt_creation_fee)
-#endif
           )
 CHAINBASE_SET_INDEX_TYPE( steem::chain::dynamic_global_property_object, steem::chain::dynamic_global_property_index )
