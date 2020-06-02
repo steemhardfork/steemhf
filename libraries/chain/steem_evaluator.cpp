@@ -1312,9 +1312,11 @@ void withdraw_vesting_evaluator::do_apply( const withdraw_vesting_operation& o )
    }
    else
    {
-      FC_ASSERT( o.vesting_shares.symbol == VESTS_SYMBOL, "Vesting shares must be a vesting symbol." );
-      FC_ASSERT( account.vesting_shares >= asset( 0, VESTS_SYMBOL ), "Account does not have sufficient Steem Power for withdraw." );
-      FC_ASSERT( account.vesting_shares - account.delegated_vesting_shares >= o.vesting_shares, "Account does not have sufficient Steem Power for withdraw." );
+      int vesting_withdraw_intervals = STEEM_VESTING_WITHDRAW_INTERVALS_PRE_HF_16;
+      if( _db.has_hardfork( STEEM_HARDFORK_0_16__551 ) )
+         vesting_withdraw_intervals = STEEM_VESTING_WITHDRAW_INTERVALS; /// 13 weeks = 1 quarter of a year
+      if( _db.has_hardfork( STEEM_HARDFORK_0_23 ) )
+         vesting_withdraw_intervals = STEEM_VESTING_WITHDRAW_INTERVALS_HF_23; /// 4 weeks
 
       if( o.vesting_shares.amount == 0 )
       {
